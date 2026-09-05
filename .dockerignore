@@ -1,0 +1,11 @@
+.venv
+data/raw
+notebooks
+tests
+.git
+.github
+cache
+.pytest_cache
+.ruff_cache
+.mypy_cache
+*.ipynb_checkpoints

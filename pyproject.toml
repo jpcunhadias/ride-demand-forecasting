@@ -8,21 +8,31 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "fastapi>=0.121.2",
+    "joblib>=1.5.2",
+    "numpy>=2.5.2",
+    "pandas>=3.0.5",
+    "pydantic>=2.12.4",
+    "scikit-learn>=1.9.0",
+    "uvicorn[standard]>=0.38.0",
+    "xgboost>=3.4.1",
+]
+
+[project.optional-dependencies]
+# Only needed for the exploratory notebook (EDA plots, basemaps, OSM
+# boundary lookups) - not required to train or serve the model.
+notebook = [
     "contextily>=1.7.1",
     "geopandas>=1.1.4",
     "geopy>=2.5.0",
     "jupyter>=1.1.1",
     "matplotlib>=3.11.1",
-    "numpy>=2.5.2",
     "osmnx>=2.1.1",
-    "pandas>=3.0.5",
-    "scikit-learn>=1.9.0",
     "seaborn>=0.13.2",
-    "xgboost>=3.4.1",
 ]
 
 [project.scripts]
-ride-demand-forecasting = "ride_demand_forecasting:main"
+ride-demand-train = "ride_demand_forecasting.train:main"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
@@ -31,12 +41,20 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "dvc[s3]>=3.67.1",
+    "httpx>=0.28.1",
     "ipykernel>=7.3.0",
     "mypy>=2.3.1",
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "ruff>=0.16.6",
 ]
+
+[tool.uv]
+# xgboost's Linux wheel unconditionally depends on nvidia-nccl-cu13 (a
+# multi-GPU communication library, ~240MB) even though we only run CPU
+# inference. Overriding it to an impossible marker drops it from the
+# resolved lock/install entirely without affecting xgboost itself.
+override-dependencies = ["nvidia-nccl-cu13; sys_platform == 'never'"]
 
 [tool.ruff]
 line-length = 100

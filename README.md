@@ -24,8 +24,10 @@ signal throughout.
 
 - [Key finding: the naive split silently broke the evaluation](#key-finding-the-naive-split-silently-broke-the-evaluation)
 - [What the notebook covers](#what-the-notebook-covers)
+- [The production service](#the-production-service)
 - [Stack](#stack)
 - [Quick start](#quick-start)
+- [Running the service](#running-the-service)
 - [Project structure](#project-structure)
 - [Status](#status)
 - [Limitations](#limitations)
@@ -103,11 +105,64 @@ run end-to-end against the real dataset (not copy-pasted conclusions):
   rate), and validity considerations for evaluating it against a control
   group.
 
+## The production service
+
+[`src/ride_demand_forecasting/`](src/ride_demand_forecasting/) ports the
+notebook's data/feature/model logic into a real package backing a FastAPI
+service, with two fixes that only matter once you're actually serving
+predictions (the notebook itself is left untouched as the Phase-1
+exploratory record):
+
+- **Spatial leakage**: the notebook fits its pickup-zone KMeans on
+  train+test coordinates combined. [`train.py`](src/ride_demand_forecasting/train.py)
+  fits it on **train-only** coordinates, then assigns zones to the test set
+  with the already-fitted model.
+- **Circular features**: the notebook trains on `avg_ride_duration_min` /
+  `avg_ride_distance` as if they were known ahead of time — but those are
+  outcomes of rides that haven't happened yet, so a real caller can't
+  supply them for a future prediction window. The training pipeline instead
+  builds a `(pickup_zone, hour) -> historical avg duration/distance` lookup
+  from training data, and the service uses that internally — the API only
+  needs `pickup_zone` (or raw `lat`/`lng`, mapped to a zone via the
+  persisted KMeans model) and `hour`.
+
+Distance is also computed with a vectorized NumPy haversine instead of the
+notebook's row-wise `geopy.distance.geodesic` (city-scale difference is
+<0.5%, and it drops `geopy`/`osmnx`/`geopandas`/`contextily` from the
+service's runtime dependencies entirely — they stay notebook-only). With
+those fixes, the production pipeline evaluates to:
+
+| Metric | Value |
+|---|---:|
+| MAE | 2.10 rides/day |
+| RMSE | 3.24 rides/day |
+
+(Higher than the notebook's 1.72/2.67 — expected, since the leakage fix
+removes an unrealistic advantage the notebook's baseline had.)
+
+A model artifact trained on the full dataset is committed at
+[`models/model.joblib`](models/model.joblib) (KMeans + `OrdinalEncoder` +
+`XGBRegressor` + the zone-hour profile lookup), so the API works right
+after cloning — no Kaggle download needed to serve predictions, only to
+retrain.
+
+**API:**
+
+- `GET /health`
+- `POST /predict` — body is either `{"pickup_zone": int, "hour": int}` or
+  `{"lat": float, "lng": float, "hour": int}`
+- `GET /rankings?hour=18&top_n=10` — zones ranked by predicted demand for
+  that hour, for the driver-guidance use case described below
+
 ## Stack
 
-`uv`-managed. pandas, NumPy, scikit-learn, XGBoost, GeoPandas, `osmnx` +
-`contextily` (OSM boundaries and basemaps), `geopy` (geodesic distance),
-matplotlib/seaborn, Jupyter.
+`uv`-managed.
+
+- **Service** (default install): pandas, NumPy, scikit-learn, XGBoost,
+  FastAPI, Uvicorn, Pydantic, joblib.
+- **Notebook only** (`uv sync --extra notebook`): GeoPandas, `osmnx` +
+  `contextily` (OSM boundaries and basemaps), `geopy` (geodesic distance),
+  matplotlib/seaborn, Jupyter.
 
 ## Quick start
 
@@ -118,7 +173,7 @@ No Kaggle API credentials are required — this uses a manual download:
    dataset (sign-in required, free).
 2. Place it at `data/raw/train.csv`.
 3. ```bash
-   uv sync
+   uv sync --extra notebook
    uv run jupyter lab   # open notebooks/ride_demand_forecasting.ipynb,
                         # select the "ride-demand-forecasting" kernel
    ```
@@ -127,6 +182,39 @@ Re-running top to bottom takes a few minutes — most of it is a row-wise
 geodesic distance calculation over ~1.4M rides and a couple of OSM/basemap
 network calls.
 
+## Running the service
+
+A trained artifact is already committed, so this works without the Kaggle
+dataset:
+
+```bash
+uv sync
+uv run uvicorn ride_demand_forecasting.api.main:app --reload
+```
+
+```bash
+curl -X POST localhost:8000/predict -H 'Content-Type: application/json' \
+  -d '{"pickup_zone": 5, "hour": 18}'
+
+curl -X POST localhost:8000/predict -H 'Content-Type: application/json' \
+  -d '{"lat": 40.75, "lng": -73.98, "hour": 18}'
+
+curl 'localhost:8000/rankings?hour=18&top_n=10'
+```
+
+Or with Docker:
+
+```bash
+docker build -t ride-demand-forecasting .
+docker run -p 8000:8000 ride-demand-forecasting
+```
+
+To retrain against your own copy of `data/raw/train.csv`:
+
+```bash
+uv run ride-demand-train   # writes models/model.joblib
+```
+
 ## Project structure
 
 ```
@@ -134,9 +222,18 @@ network calls.
 ├── data/
 │   ├── raw/          # train.csv (Kaggle, gitignored — see Quick start)
 │   └── processed/    # agg_train.csv / agg_test.csv, generated by the notebook
+├── models/
+│   └── model.joblib  # committed, trained artifact backing the API
 ├── notebooks/
 │   └── ride_demand_forecasting.ipynb
-└── src/ride_demand_forecasting/   # scaffold placeholder for the Phase 2 service (see Status)
+├── src/ride_demand_forecasting/
+│   ├── data.py, features.py, clustering.py   # pipeline building blocks
+│   ├── train.py                              # training entry point
+│   ├── inference.py                          # loads the artifact, serves predictions
+│   └── api/                                  # FastAPI app
+├── tests/
+├── Dockerfile
+└── .github/workflows/ci.yml
 ```
 
 ## Status
@@ -144,7 +241,7 @@ network calls.
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | EDA, zone clustering, baseline XGBoost demand model, deployment strategy, A/B test design | Done |
-| 2 | Productionized service — FastAPI, Docker, tests, CI | Not started |
+| 2 | Productionized service — FastAPI, Docker, tests, CI | Done |
 
 ## Limitations
 
@@ -157,8 +254,9 @@ network calls.
   representative sample would be the next step, not visual inspection.
 - **Baseline model only** — no hyperparameter tuning, no alternative
   architectures (LightGBM, time series models) tried yet.
-- **Notebook-only** — no deployed service yet; that's the explicit Phase 2
-  in the Status table above.
+- **Batch retraining only** — no scheduled retraining/CD pipeline yet (the
+  notebook's deployment strategy section sketches an Airflow-based one);
+  `uv run ride-demand-train` is a manual step for now.
 
 ## License
 

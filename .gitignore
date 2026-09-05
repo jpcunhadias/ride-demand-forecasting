@@ -8,10 +8,14 @@ wheels/
 
 # Virtual environments
 .venv
-data/
-.venv/
-__pycache__/
-*.pyc
+
+# Data (Kaggle-licensed, not ours to redistribute) - keep the folder
+# structure visible via .gitkeep, but not the actual CSVs.
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
 .ipynb_checkpoints/
 .pytest_cache/
 .ruff_cache/
