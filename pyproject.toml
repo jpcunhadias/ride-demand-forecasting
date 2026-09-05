@@ -1,0 +1,39 @@
+[project]
+name = "ride-demand-forecasting"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Joao Pedro Dias", email = "joaopedrocdias@hotmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+ride-demand-forecasting = "ride_demand_forecasting:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "dvc[s3]>=3.67.1",
+    "ipykernel>=7.3.0",
+    "mypy>=2.3.1",
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "ruff>=0.16.6",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
