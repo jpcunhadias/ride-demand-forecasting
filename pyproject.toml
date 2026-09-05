@@ -8,10 +8,13 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "contextily>=1.7.1",
     "geopandas>=1.1.4",
+    "geopy>=2.5.0",
     "jupyter>=1.1.1",
     "matplotlib>=3.11.1",
     "numpy>=2.5.2",
+    "osmnx>=2.1.1",
     "pandas>=3.0.5",
     "scikit-learn>=1.9.0",
     "seaborn>=0.13.2",
