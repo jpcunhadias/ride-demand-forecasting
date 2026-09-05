@@ -55,10 +55,10 @@ evaluates to:
 
 | Metric | Value |
 |---|---:|
-| MAE | 1.98 rides/day |
-| RMSE | 3.16 rides/day |
+| MAE | 1.72 rides/day |
+| RMSE | 2.67 rides/day |
 
-— about a quarter of the mean and roughly 40% of the median target value,
+— about a fifth of the mean and roughly 30% of the median target value,
 a reasonable baseline. The full reasoning is in the notebook's
 ["Note: why `avg_daily_ride_count`, not raw `ride_count`"](notebooks/ride_demand_forecasting.ipynb)
 cell.
@@ -74,16 +74,22 @@ run end-to-end against the real dataset (not copy-pasted conclusions):
 - **Temporal EDA** — ride volume peaks at 6 PM and troughs at 5 AM (a 6x
   gap); Friday is busiest, Monday quietest; mean trip duration peaks in
   the afternoon (~17–19 min around 2–4 PM), consistent with traffic
-  congestion rather than any pricing effect.
+  congestion rather than any pricing effect. The daily series has one
+  sharp crash — January 23, 2016, down to ~1,600 rides from a normal
+  7,000–9,500 — that lines up exactly with Winter Storm Jonas ("Snowzilla"),
+  a real external demand shock the current feature set can't see coming.
 - **Spatial cleanup** — IQR-based outlier detection flags 4–6% of rows per
   coordinate (too aggressive for geospatial data, exactly as in the
   original analysis); switching to an OSM administrative-boundary check
   (via `osmnx`) finds only **0.09%** genuine geo-outliers — GPS glitches
   landing near Sacramento, CA and out over the Atlantic — remarkably close
-  to the original's 0.11%, on a totally different city and dataset.
+  to the original's 0.11%, on a totally different city and dataset. Unlike
+  the original (where only drop-off coordinates had glitches), this
+  dataset has them in pickup coordinates too, so the cleaning filter checks
+  all four coordinates rather than just drop-off.
 - **Zone clustering** — KMeans (`k=40`) on pickup/dropoff coordinates.
-  Pickup demand is fairly spread out (busiest single zone: 6.7% of rides;
-  top 10 zones: ~51.5%), and drop-offs concentrate around Manhattan's
+  Pickup demand is fairly spread out (busiest single zone: 6.1% of rides;
+  top 10 zones: ~50.4%), and drop-offs concentrate around Manhattan's
   commercial cores without the single dominant hub the original synthetic
   data showed.
 - **Baseline model** — XGBoost regressor predicting `avg_daily_ride_count`
