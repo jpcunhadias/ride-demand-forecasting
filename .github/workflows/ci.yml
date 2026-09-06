@@ -39,3 +39,36 @@ jobs:
 
       - name: Build image
         run: docker build -t ride-demand-forecasting .
+
+      - name: Run container
+        # No --rm here: if the container crashes on startup, we still want
+        # `docker logs` below to have something to show instead of "No such
+        # container" - it's removed explicitly in the cleanup step instead.
+        run: docker run -d -p 8000:8000 --name rdf-smoke-test ride-demand-forecasting
+
+      - name: Wait for startup and smoke-test the API
+        run: |
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8000/health > /dev/null; then
+              echo "Service is up"
+              break
+            fi
+            if [ "$i" -eq 15 ]; then
+              echo "Service never became healthy" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+          curl -sf -X POST http://localhost:8000/predict \
+            -H 'Content-Type: application/json' \
+            -d '{"pickup_zone": 0, "hour": 12}'
+          curl -sf 'http://localhost:8000/rankings?hour=12&top_n=3'
+
+      - name: Show container logs
+        if: always()
+        run: docker logs rdf-smoke-test
+
+      - name: Remove container
+        if: always()
+        run: docker rm -f rdf-smoke-test
