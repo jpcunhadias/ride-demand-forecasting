@@ -18,7 +18,7 @@ class PredictionService:
         artifact = joblib.load(model_path)
         self.kmeans = artifact["kmeans"]
         self.encoder = artifact["encoder"]
-        self.model = artifact["xgb_model"]
+        self.model = artifact["model"]
         self.feature_order = artifact["feature_order"]
         self.zones: list[int] = artifact["zones"]
         self.metrics: dict = artifact["metrics"]

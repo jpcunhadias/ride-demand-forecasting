@@ -10,17 +10,19 @@ requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.121.2",
     "joblib>=1.5.2",
+    "lightgbm>=4.5.0",
     "numpy>=2.5.2",
     "pandas>=3.0.5",
     "pydantic>=2.12.4",
     "scikit-learn>=1.9.0",
     "uvicorn[standard]>=0.38.0",
-    "xgboost>=3.4.1",
 ]
 
 [project.optional-dependencies]
 # Only needed for the exploratory notebook (EDA plots, basemaps, OSM
-# boundary lookups) - not required to train or serve the model.
+# boundary lookups, the untuned baseline and XGBoost/time-series comparison
+# points) - not required to train or serve the model, which ships tuned
+# LightGBM (see the notebook's Model Validation section for why).
 notebook = [
     "contextily>=1.7.1",
     "geopandas>=1.1.4",
@@ -29,6 +31,8 @@ notebook = [
     "matplotlib>=3.11.1",
     "osmnx>=2.1.1",
     "seaborn>=0.13.2",
+    "statsmodels>=0.14.4",
+    "xgboost>=3.4.1",
 ]
 
 [project.scripts]

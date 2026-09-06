@@ -72,6 +72,35 @@ def aggregate_zone_hour(
     return agg_df
 
 
+def aggregate_zone_hour_daily(
+    df: pd.DataFrame,
+    zones: np.ndarray | list[int],
+    zone_col: str = "pickup_zone",
+    time_col: str = "hour",
+) -> pd.DataFrame:
+    """One row per (zone, hour, date), zero-filled for every combination - so training
+    sees genuine zero-demand zone-hour-days, not just observed ones.
+
+    Unlike `aggregate_zone_hour` (one pre-averaged row per zone-hour for a whole split),
+    this keeps every day as its own training example - far more rows, and each one a
+    natural, un-averaged observation of the target instead of a split-length-dependent
+    summary statistic.
+    """
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["start_time"]).dt.date
+
+    daily = df.groupby([zone_col, time_col, "date"]).size().reset_index(name="ride_count")
+
+    dates = df["date"].unique()
+    hours = np.arange(24)
+    all_combos = pd.DataFrame(
+        list(product(zones, hours, dates)), columns=[zone_col, time_col, "date"]
+    )
+    daily = all_combos.merge(daily, on=[zone_col, time_col, "date"], how="left")
+    daily["ride_count"] = daily["ride_count"].fillna(0).astype(int)
+    return daily
+
+
 def build_zone_hour_profile(agg_train: pd.DataFrame) -> pd.DataFrame:
     """The (pickup_zone, hour) -> historical avg duration/distance lookup used at serving
     time, so the API doesn't need the caller to supply features that don't exist yet for a

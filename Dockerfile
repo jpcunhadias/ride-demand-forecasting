@@ -14,6 +14,11 @@ RUN uv sync --frozen --no-dev
 
 FROM python:3.13-slim-bookworm
 
+# LightGBM's compiled extension links against libgomp (OpenMP), which the slim
+# base image doesn't include by default.
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY --from=builder /app/.venv ./.venv

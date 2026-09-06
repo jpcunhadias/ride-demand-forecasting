@@ -5,6 +5,7 @@ import pytest
 from ride_demand_forecasting.features import (
     add_temporal_features,
     aggregate_zone_hour,
+    aggregate_zone_hour_daily,
     build_zone_hour_profile,
     haversine_distance_km,
 )
@@ -56,6 +57,39 @@ def test_aggregate_zone_hour_fills_missing_combos_and_computes_daily_rate() -> N
     assert zone1_hour6["ride_count"] == 0
     assert zone1_hour6["avg_ride_duration_min"] == 0
     assert zone1_hour6["avg_daily_ride_count"] == 0
+
+
+def test_aggregate_zone_hour_daily_zero_fills_every_zone_hour_date_combo() -> None:
+    df = pd.DataFrame(
+        {
+            "pickup_zone": [0, 0, 1],
+            "hour": [5, 5, 6],
+            "start_time": [
+                "2016-01-01 05:10:00",
+                "2016-01-01 05:40:00",
+                "2016-01-02 06:15:00",
+            ],
+        }
+    )
+
+    daily = aggregate_zone_hour_daily(df, zones=[0, 1])
+
+    # 2 zones x 24 hours x 2 distinct dates
+    assert len(daily) == 2 * 24 * 2
+
+    zone0_hour5_jan1 = daily[
+        (daily["pickup_zone"] == 0)
+        & (daily["hour"] == 5)
+        & (daily["date"] == pd.Timestamp("2016-01-01").date())
+    ].iloc[0]
+    assert zone0_hour5_jan1["ride_count"] == 2
+
+    zone0_hour5_jan2 = daily[
+        (daily["pickup_zone"] == 0)
+        & (daily["hour"] == 5)
+        & (daily["date"] == pd.Timestamp("2016-01-02").date())
+    ].iloc[0]
+    assert zone0_hour5_jan2["ride_count"] == 0
 
 
 def test_build_zone_hour_profile_has_expected_columns() -> None:

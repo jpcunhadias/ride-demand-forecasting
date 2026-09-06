@@ -5,8 +5,9 @@
 ![uv](https://img.shields.io/badge/managed%20with-uv-de5fe9)
 
 A spatiotemporal ride-demand forecasting case study for a ride-hailing
-platform: EDA, zone clustering, an XGBoost baseline demand model, a
-deployment strategy, and an A/B test design to evaluate it in production.
+platform: EDA, validated zone clustering, a tuned demand model compared
+against alternatives, a deployment strategy, and an A/B test design to
+evaluate it in production.
 
 This started as a data-science take-home exercise for a ride-hailing
 company, built against ride data they provided for a specific city.
@@ -38,7 +39,7 @@ The modeling unit is `(pickup_zone, hour)`, aggregated with a straightforward
 80/20 **train/test split by row count** — following the original
 methodology exactly. That split looked fine until the evaluation numbers
 didn't add up: raw `ride_count` (rides summed per zone-hour over the whole
-split) averaged **1,214** on the training set but only **304** on the test
+split) averaged **2,429** on the training set but only **607** on the test
 set — a 4x gap, for what should be the same underlying demand pattern.
 
 The cause: ride volume is roughly uniform per day, so an 80/20 split *by
@@ -52,18 +53,20 @@ than it actually was, for a reason that has nothing to do with the model.
 that split) instead of a raw sum — the actual daily rate, which is also
 the quantity that matters for driver guidance in the first place ("how
 many rides typically happen in this zone during this hour"). After the
-fix, train and test means both land around 8 rides/day, and the model
+fix, train and test means both land around 16 rides/day, and the model
 evaluates to:
 
 | Metric | Value |
 |---|---:|
-| MAE | 1.72 rides/day |
-| RMSE | 2.67 rides/day |
+| MAE | 3.24 rides/day |
+| RMSE | 5.09 rides/day |
 
-— about a fifth of the mean and roughly 30% of the median target value,
+— about a fifth of the mean and roughly 22% of the median target value,
 a reasonable baseline. The full reasoning is in the notebook's
 ["Note: why `avg_daily_ride_count`, not raw `ride_count`"](notebooks/ride_demand_forecasting.ipynb)
-cell.
+cell. (The production service, below, sidesteps this split-window issue
+entirely by training on day-level rows instead of one pre-averaged number
+per zone-hour — see its own, differently-scaled metric.)
 
 ## What the notebook covers
 
@@ -89,14 +92,24 @@ run end-to-end against the real dataset (not copy-pasted conclusions):
   the original (where only drop-off coordinates had glitches), this
   dataset has them in pickup coordinates too, so the cleaning filter checks
   all four coordinates rather than just drop-off.
-- **Zone clustering** — KMeans (`k=40`) on pickup/dropoff coordinates.
-  Pickup demand is fairly spread out (busiest single zone: 6.1% of rides;
-  top 10 zones: ~50.4%), and drop-offs concentrate around Manhattan's
-  commercial cores without the single dominant hub the original synthetic
-  data showed.
+- **Zone clustering** — KMeans on pickup/dropoff coordinates, with `k`
+  validated via elbow/silhouette analysis (silhouette peaks at **k=20**,
+  half the original `k=40` visual guess). Pickup demand is fairly spread
+  out (busiest single zone: 8.6% of rides; top 10 zones: ~71.5%), and
+  drop-offs concentrate around Manhattan's commercial cores without the
+  single dominant hub the original synthetic data showed.
 - **Baseline model** — XGBoost regressor predicting `avg_daily_ride_count`
   per `(pickup_zone, hour)` from zone, hour, average trip duration, and
   average ride distance.
+- **Model validation** — hyperparameter-tunes that baseline (via
+  `RandomizedSearchCV` + `TimeSeriesSplit`) and compares it against a
+  similarly-tuned LightGBM on a richer day-level dataset (tuned LightGBM
+  wins narrowly: MAE 4.626 vs. XGBoost's 4.627), then goes further with a
+  notebook-only research extension adding recency features (last
+  observed count, trailing rolling mean) and two time-series baselines
+  (naive rolling-mean, Holt-Winters ETS) — recency features turn out to
+  be the single biggest lever tested (~20% MAE improvement), a concrete,
+  quantified case for a future stateful redesign of the service.
 - **Deployment & driver guidance strategy** — how this would run in
   production (Airflow, Docker, FastAPI, a model registry, Grafana
   monitoring), and how drivers would see it in the app.
@@ -109,8 +122,8 @@ run end-to-end against the real dataset (not copy-pasted conclusions):
 
 [`src/ride_demand_forecasting/`](src/ride_demand_forecasting/) ports the
 notebook's data/feature/model logic into a real package backing a FastAPI
-service, with two fixes that only matter once you're actually serving
-predictions (the notebook itself is left untouched as the Phase-1
+service, with fixes and improvements that only matter once you're actually
+serving predictions (the notebook itself is left untouched as the Phase-1
 exploratory record):
 
 - **Spatial leakage**: the notebook fits its pickup-zone KMeans on
@@ -125,26 +138,40 @@ exploratory record):
   from training data, and the service uses that internally — the API only
   needs `pickup_zone` (or raw `lat`/`lng`, mapped to a zone via the
   persisted KMeans model) and `hour`.
+- **Validated `k=20`, tuned LightGBM**: both come straight from the
+  notebook's "Validating the Number of Pickup Zones" and "Model Validation"
+  sections (see above) — not re-derived separately for the service.
+- **Day-level training rows**: rather than one pre-averaged number per
+  zone-hour for the whole split (a few hundred rows total), training uses
+  one row per `(pickup_zone, hour, date)` — tens of thousands of rows,
+  each a real (noisier) daily observation. This also sidesteps the
+  train/test window-length mismatch described in the Key Finding above:
+  with no aggregation-over-a-variable-length-window step, there's nothing
+  left for it to bias.
 
 Distance is also computed with a vectorized NumPy haversine instead of the
 notebook's row-wise `geopy.distance.geodesic` (city-scale difference is
-<0.5%, and it drops `geopy`/`osmnx`/`geopandas`/`contextily` from the
-service's runtime dependencies entirely — they stay notebook-only). With
-those fixes, the production pipeline evaluates to:
+<0.5%, and it drops `geopy`/`osmnx`/`geopandas`/`contextily`/`xgboost` from
+the service's runtime dependencies entirely — they stay notebook-only).
+With those changes, the production pipeline evaluates to:
 
 | Metric | Value |
 |---|---:|
-| MAE | 2.10 rides/day |
-| RMSE | 3.24 rides/day |
+| MAE | 4.56 rides/day |
+| RMSE | 6.78 rides/day |
 
-(Higher than the notebook's 1.72/2.67 — expected, since the leakage fix
-removes an unrealistic advantage the notebook's baseline had.)
+(Not directly comparable to the notebook's numbers above — this is a
+day-level metric, measuring error against actual daily counts rather than
+a pre-averaged rate, so it's a noisier, harder target by construction. It
+is directly comparable to the notebook's own day-level comparison, where
+this same tuned LightGBM configuration scores similarly: MAE 4.626,
+RMSE 6.637 — the small gap is normal run-to-run variance.)
 
 A model artifact trained on the full dataset is committed at
 [`models/model.joblib`](models/model.joblib) (KMeans + `OrdinalEncoder` +
-`XGBRegressor` + the zone-hour profile lookup), so the API works right
-after cloning — no Kaggle download needed to serve predictions, only to
-retrain.
+tuned `LGBMRegressor` + the zone-hour profile lookup), so the API works
+right after cloning — no Kaggle download needed to serve predictions, only
+to retrain.
 
 **API:**
 
@@ -158,11 +185,12 @@ retrain.
 
 `uv`-managed.
 
-- **Service** (default install): pandas, NumPy, scikit-learn, XGBoost,
+- **Service** (default install): pandas, NumPy, scikit-learn, LightGBM,
   FastAPI, Uvicorn, Pydantic, joblib.
-- **Notebook only** (`uv sync --extra notebook`): GeoPandas, `osmnx` +
+- **Notebook only** (`uv sync --extra notebook`): XGBoost (the untuned
+  baseline and the tuning comparison point), GeoPandas, `osmnx` +
   `contextily` (OSM boundaries and basemaps), `geopy` (geodesic distance),
-  matplotlib/seaborn, Jupyter.
+  `statsmodels` (Holt-Winters ETS baseline), matplotlib/seaborn, Jupyter.
 
 ## Quick start
 
@@ -249,14 +277,19 @@ uv run ride-demand-train   # writes models/model.joblib
   shape (timestamped pickup/dropoff coordinates), different city, and no
   fare data (trip duration stands in for ride value throughout — see the
   note at the top of the notebook).
-- **`k=40` is a heuristic, not a validated choice** — same caveat the
-  original analysis flagged: a proper elbow/silhouette pass on a
-  representative sample would be the next step, not visual inspection.
-- **Baseline model only** — no hyperparameter tuning, no alternative
-  architectures (LightGBM, time series models) tried yet.
+- **Stateless serving leaves accuracy on the table** — the notebook's
+  Model Validation research extension shows recency features (last
+  observed count, trailing rolling mean) cut MAE by ~20% over the static
+  features the API can currently supply. Realizing that gain needs a
+  service redesign that tracks recent per-zone-hour counts — a concrete
+  next step, not a vague one, now that it's been measured.
 - **Batch retraining only** — no scheduled retraining/CD pipeline yet (the
   notebook's deployment strategy section sketches an Airflow-based one);
   `uv run ride-demand-train` is a manual step for now.
+- **~6 months of data, one city** — the Kaggle dataset spans January-June
+  2016 only, so seasonal patterns outside that window (e.g. summer, winter
+  holidays) are untested; the ~5-week test window is standard for a
+  chronological split but is itself drawn from that same limited span.
 
 ## License
 
