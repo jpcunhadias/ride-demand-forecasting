@@ -1,8 +1,11 @@
 from pathlib import Path
 
+import pandas as pd
+import pytest
+
 from ride_demand_forecasting.config import N_PICKUP_ZONES
 from ride_demand_forecasting.inference import PredictionService
-from ride_demand_forecasting.train import train
+from ride_demand_forecasting.train import save_artifact, train
 
 
 def test_train_produces_a_complete_artifact(raw_trips_csv: Path) -> None:
@@ -29,3 +32,20 @@ def test_saved_artifact_round_trips_through_prediction_service(model_artifact_pa
 
     assert isinstance(prediction, float)
     assert prediction >= 0
+
+
+def test_age_days_is_near_zero_right_after_training(model_artifact_path: Path) -> None:
+    service = PredictionService(model_path=model_artifact_path)
+
+    assert 0 <= service.age_days() < 0.01  # well under a minute in days
+
+
+def test_age_days_reflects_an_older_artifact(tmp_path: Path, raw_trips_csv: Path) -> None:
+    artifact = train(raw_data_path=raw_trips_csv)
+    artifact["trained_at"] = (pd.Timestamp.now("UTC") - pd.Timedelta(days=45)).isoformat()
+    model_path = tmp_path / "old_model.joblib"
+    save_artifact(artifact, model_path=model_path)
+
+    service = PredictionService(model_path=model_path)
+
+    assert service.age_days() == pytest.approx(45, abs=0.01)

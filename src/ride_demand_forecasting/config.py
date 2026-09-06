@@ -35,3 +35,8 @@ LGBM_PARAMS: dict[str, Any] = {
 
 RAW_DATA_PATH = Path(os.environ.get("RDF_RAW_DATA_PATH", "data/raw/train.csv"))
 MODEL_PATH = Path(os.environ.get("RDF_MODEL_PATH", "models/model.joblib"))
+
+# If the loaded artifact is older than this, the service logs a warning at startup -
+# a cheap, passive signal that a retrain may be overdue. Doesn't block startup or
+# serving; there's no scheduled retraining pipeline yet to act on it automatically.
+MODEL_STALENESS_WARNING_DAYS = int(os.environ.get("RDF_MODEL_STALENESS_WARNING_DAYS", "30"))

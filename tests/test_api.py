@@ -1,8 +1,10 @@
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
 from ride_demand_forecasting.api.main import app
 from ride_demand_forecasting.config import N_PICKUP_ZONES
+from ride_demand_forecasting.train import save_artifact, train
 
 
 @pytest.fixture
@@ -67,6 +69,26 @@ def test_predict_rejects_unknown_zone(client: TestClient) -> None:
     response = client.post("/predict", json={"pickup_zone": 999, "hour": 8})
 
     assert response.status_code == 422
+
+
+def test_fresh_model_does_not_log_staleness_warning(client: TestClient, caplog) -> None:
+    with caplog.at_level("WARNING"):
+        client.get("/health")
+
+    assert not any("consider retraining" in r.message for r in caplog.records)
+
+
+def test_stale_model_logs_staleness_warning(tmp_path, raw_trips_csv, monkeypatch, caplog) -> None:
+    artifact = train(raw_data_path=raw_trips_csv)
+    artifact["trained_at"] = (pd.Timestamp.now("UTC") - pd.Timedelta(days=45)).isoformat()
+    model_path = tmp_path / "stale_model.joblib"
+    save_artifact(artifact, model_path=model_path)
+    monkeypatch.setenv("RDF_MODEL_PATH", str(model_path))
+
+    with caplog.at_level("WARNING"), TestClient(app):
+        pass
+
+    assert any("consider retraining" in r.message for r in caplog.records)
 
 
 def test_rankings(client: TestClient) -> None:

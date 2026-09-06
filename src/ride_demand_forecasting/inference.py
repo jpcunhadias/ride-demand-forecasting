@@ -33,6 +33,12 @@ class PredictionService:
             for row in profile.itertuples()
         }
 
+    def age_days(self) -> float:
+        """Days since the artifact was trained, based on its `trained_at` timestamp."""
+        trained_at = pd.Timestamp(self.trained_at)
+        now = pd.Timestamp.now(tz=trained_at.tz)
+        return (now - trained_at).total_seconds() / 86400
+
     def zone_for_coords(self, lat: float, lng: float) -> int:
         coords = pd.DataFrame({"start_lat": [lat], "start_lng": [lng]})
         return int(self.kmeans.predict(coords)[0])

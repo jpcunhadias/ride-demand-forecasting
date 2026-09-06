@@ -13,7 +13,7 @@ from ride_demand_forecasting.api.schemas import (
     RankingItem,
     RankingsResponse,
 )
-from ride_demand_forecasting.config import MODEL_PATH
+from ride_demand_forecasting.config import MODEL_PATH, MODEL_STALENESS_WARNING_DAYS
 from ride_demand_forecasting.inference import PredictionService, UnknownZoneError
 
 logging.basicConfig(
@@ -30,7 +30,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Loading model artifact from %s", model_path)
     app.state.service = PredictionService(model_path=model_path)
     service: PredictionService = app.state.service
-    logger.info("Model loaded (trained_at=%s, metrics=%s)", service.trained_at, service.metrics)
+    age_days = service.age_days()
+    logger.info(
+        "Model loaded (trained_at=%s, age=%.1fd, metrics=%s)",
+        service.trained_at,
+        age_days,
+        service.metrics,
+    )
+    if age_days > MODEL_STALENESS_WARNING_DAYS:
+        logger.warning(
+            "Model artifact is %.1f days old (warning threshold: %d days) - consider retraining",
+            age_days,
+            MODEL_STALENESS_WARNING_DAYS,
+        )
     yield
     logger.info("Shutting down")
 
