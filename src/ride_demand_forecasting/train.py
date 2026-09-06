@@ -22,6 +22,7 @@ exploratory record, unchanged):
    identically-tuned XGBoost in the notebook's Model Validation comparison.
 """
 
+import logging
 import time
 from pathlib import Path
 
@@ -50,6 +51,11 @@ from ride_demand_forecasting.features import (
     aggregate_zone_hour_daily,
     build_zone_hour_profile,
 )
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 
 def train(raw_data_path: str | Path = RAW_DATA_PATH) -> dict:
@@ -119,13 +125,13 @@ def save_artifact(artifact: dict, model_path: str | Path = MODEL_PATH) -> None:
 
 def main() -> None:
     start = time.perf_counter()
-    print(f"Training on {RAW_DATA_PATH} ...")
+    logger.info("Training on %s ...", RAW_DATA_PATH)
     artifact = train()
     save_artifact(artifact)
     elapsed = time.perf_counter() - start
-    print(f"Saved model artifact to {MODEL_PATH} in {elapsed:.1f}s")
-    print(f"Test MAE: {artifact['metrics']['mae']:.3f} rides/day")
-    print(f"Test RMSE: {artifact['metrics']['rmse']:.3f} rides/day")
+    logger.info("Saved model artifact to %s in %.1fs", MODEL_PATH, elapsed)
+    logger.info("Test MAE: %.3f rides/day", artifact["metrics"]["mae"])
+    logger.info("Test RMSE: %.3f rides/day", artifact["metrics"]["rmse"])
 
 
 if __name__ == "__main__":

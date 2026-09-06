@@ -22,6 +22,7 @@ class PredictionService:
         self.feature_order = artifact["feature_order"]
         self.zones: list[int] = artifact["zones"]
         self.metrics: dict = artifact["metrics"]
+        self.trained_at: str = artifact["trained_at"]
 
         profile = artifact["zone_hour_profile"]
         self._profile: dict[tuple[int, int], tuple[float, float]] = {
