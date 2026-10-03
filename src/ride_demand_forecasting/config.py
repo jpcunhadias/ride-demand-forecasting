@@ -42,6 +42,16 @@ TLC_DATA_DIR = Path(os.environ.get("RDF_TLC_DATA_DIR", "data/raw/tlc"))
 # training window plus the publication lag.
 TLC_DEFAULT_LOOKBACK_MONTHS = 14
 
+# Plausibility limits for a trip's measurements, in the TLC's own units. A value outside
+# them is treated as missing rather than as a reason to drop the trip (see
+# `data.load_tlc_trips`). Chosen from the August 2026 file, where 97.6% of trips last
+# 1-180 minutes, 95.7% cover 0.1-60 miles, and the 99.9th percentile speed is 50 mph.
+TLC_MIN_DURATION_MIN = 1
+TLC_MAX_DURATION_MIN = 180
+TLC_MIN_DISTANCE_MILES = 0.1
+TLC_MAX_DISTANCE_MILES = 60
+TLC_MAX_SPEED_MPH = 70
+
 RAW_DATA_PATH = Path(os.environ.get("RDF_RAW_DATA_PATH", "data/raw/train.csv"))
 MODEL_PATH = Path(os.environ.get("RDF_MODEL_PATH", "models/model.joblib"))
 

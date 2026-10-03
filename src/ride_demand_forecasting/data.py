@@ -4,7 +4,17 @@ from pathlib import Path
 
 import pandas as pd
 
-from ride_demand_forecasting.config import NYC_LAT_MAX, NYC_LAT_MIN, NYC_LNG_MAX, NYC_LNG_MIN
+from ride_demand_forecasting.config import (
+    NYC_LAT_MAX,
+    NYC_LAT_MIN,
+    NYC_LNG_MAX,
+    NYC_LNG_MIN,
+    TLC_MAX_DISTANCE_MILES,
+    TLC_MAX_DURATION_MIN,
+    TLC_MAX_SPEED_MPH,
+    TLC_MIN_DISTANCE_MILES,
+    TLC_MIN_DURATION_MIN,
+)
 
 RENAME_MAP = {
     "pickup_datetime": "start_time",
@@ -39,18 +49,37 @@ def load_tlc_trips(
     """Load one month of TLC yellow taxi trips into the same normalized schema.
 
     Pickup and dropoff zone IDs are replaced by that zone's centre point (see
-    `zones.compute_zone_centroids`). Trips are dropped if they start outside `month`
-    (the published files carry a few stray timestamps), have a non-positive duration,
-    or were picked up in a zone with no centre point (the TLC's "unknown" and "outside
-    NYC" IDs). An unmapped dropoff only leaves `end_lat`/`end_lng` empty - the pickup
-    still counts as demand.
+    `zones.compute_zone_centroids`).
+
+    Cleaning keeps two questions apart, because most bad rows are real trips with one
+    bad measurement:
+
+    - *Was this a pickup we should count?* A row is dropped only if it starts outside
+      `month` (the published files carry a few stray timestamps), has a negative fare
+      (a voided record, nearly always the twin of a positive one), is a false start
+      (under a minute and no distance), or was picked up in a zone with no centre
+      point (the TLC's "unknown" and "outside NYC" IDs).
+    - *Can its measurements be trusted?* An implausible duration or distance is set to
+      missing rather than dropping the trip, so it still counts as demand but stays out
+      of the duration/distance averages. An implausible speed blanks both, since there's
+      no telling which of the two is wrong.
+
+    An unmapped dropoff only leaves `end_lat`/`end_lng` empty.
     """
     df = pd.read_parquet(path, columns=list(TLC_RENAME_MAP)).rename(columns=TLC_RENAME_MAP)
     df = df[df["start_time"].dt.to_period("M") == month]
+    df = df[~(df["fare_amount"] < 0)]
 
-    df["ride_duration_min"] = (df["end_time"] - df["start_time"]).dt.total_seconds() / 60
-    df = df[df["ride_duration_min"] > 0]
-    df["ride_distance_km"] = df.pop("trip_distance_miles") * KM_PER_MILE
+    duration = (df["end_time"] - df["start_time"]).dt.total_seconds() / 60
+    miles = df.pop("trip_distance_miles")
+    false_start = (duration < TLC_MIN_DURATION_MIN) & (miles == 0)
+    df, duration, miles = df[~false_start], duration[~false_start], miles[~false_start]
+
+    duration_ok = duration.between(TLC_MIN_DURATION_MIN, TLC_MAX_DURATION_MIN)
+    distance_ok = miles.between(TLC_MIN_DISTANCE_MILES, TLC_MAX_DISTANCE_MILES)
+    too_fast = duration_ok & distance_ok & (miles / (duration / 60) > TLC_MAX_SPEED_MPH)
+    df["ride_duration_min"] = duration.where(duration_ok & ~too_fast)
+    df["ride_distance_km"] = (miles * KM_PER_MILE).where(distance_ok & ~too_fast)
 
     coords = zone_centroids[["location_id", "lat", "lng"]]
     df = df.merge(
