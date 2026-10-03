@@ -12,9 +12,15 @@ from sklearn.cluster import KMeans
 from ride_demand_forecasting.config import N_PICKUP_ZONES, RANDOM_STATE
 
 
-def fit_pickup_zones(train_df: pd.DataFrame) -> KMeans:
-    kmeans = KMeans(n_clusters=N_PICKUP_ZONES, random_state=RANDOM_STATE, n_init="auto")
-    kmeans.fit(train_df[["start_lat", "start_lng"]])
+def fit_pickup_zones(
+    train_df: pd.DataFrame,
+    n_zones: int = N_PICKUP_ZONES,
+    sample_weight: np.ndarray | None = None,
+) -> KMeans:
+    """Fit on one row per pickup, or on one row per distinct pickup point with
+    `sample_weight` set to how many pickups happened there - the two are equivalent."""
+    kmeans = KMeans(n_clusters=n_zones, random_state=RANDOM_STATE, n_init="auto")
+    kmeans.fit(train_df[["start_lat", "start_lng"]], sample_weight=sample_weight)
     return kmeans
 
 
