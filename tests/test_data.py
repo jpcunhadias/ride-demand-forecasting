@@ -40,7 +40,7 @@ def test_load_tlc_trips_drops_only_rows_that_are_not_countable_pickups(
 ) -> None:
     df = loaded_tlc_trips
 
-    assert df["start_time"].dt.day.tolist() == [1, 2, 3, 6, 7, 8, 9, 10, 11]
+    assert df["start_time"].dt.day.tolist() == [1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13]
     assert (df["fare_amount"] >= 0).all()
     assert df["pickup_location_id"].isin([1, 2, 3]).all()
 
@@ -51,13 +51,15 @@ def test_load_tlc_trips_blanks_implausible_measurements_but_keeps_the_trip(
     df = loaded_tlc_trips
     nan = float("nan")
 
-    # In day order: three clean trips, unmapped dropoff, no dropoff time, no distance,
-    # day-long clock error, impossible distance, impossible speed.
+    # In day order: three clean trips, unmapped dropoff, no dropoff time (distance
+    # kept: speed is undefined), no distance, day-long clock error, then three
+    # impossible speeds - which blank both values whatever each looks like on its own -
+    # and a trip that is only too long.
     assert df["ride_duration_min"].tolist() == pytest.approx(
-        [10, 20, 30, 15, nan, 15, nan, 20, nan], nan_ok=True
+        [10, 20, 30, 15, nan, 15, nan, nan, nan, nan, nan], nan_ok=True
     )
     assert (df["ride_distance_km"] / KM_PER_MILE).tolist() == pytest.approx(
-        [1.0, 2.0, 3.0, 5.0, 2.5, nan, 3.0, nan, nan], nan_ok=True
+        [1.0, 2.0, 3.0, 5.0, 2.5, nan, 3.0, nan, nan, nan, 3.0], nan_ok=True
     )
 
 

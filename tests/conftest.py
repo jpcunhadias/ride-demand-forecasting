@@ -124,8 +124,10 @@ def tlc_trips() -> pd.DataFrame:
         ("2026-08-07 13:00", 0, 2.5, 1, 2, 12.0),  # vendor reports no dropoff time
         ("2026-08-08 14:00", 15, 0.0, 2, 3, 14.0),  # no distance recorded
         ("2026-08-09 15:00", 1439, 3.0, 3, 1, 20.0),  # clock error, a day long
-        ("2026-08-10 16:00", 20, 500.0, 1, 2, 9.0),  # impossible distance
+        ("2026-08-10 16:00", 20, 500.0, 1, 2, 9.0),  # impossible distance, and speed
         ("2026-08-11 17:00", 10, 30.0, 2, 3, 70.0),  # each value plausible, 180 mph is not
+        ("2026-08-12 18:00", 0.5, 5.0, 3, 1, 25.0),  # too short, and 600 mph
+        ("2026-08-13 19:00", 200, 3.0, 1, 2, 18.0),  # too long, distance still usable
     ]
     pickups = pd.to_datetime([row[0] for row in rows])
     return pd.DataFrame(
