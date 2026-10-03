@@ -25,6 +25,7 @@ record on the 2016 dataset, unchanged):
 """
 
 import argparse
+import json
 import logging
 import time
 from pathlib import Path
@@ -40,6 +41,7 @@ from ride_demand_forecasting.clustering import assign_pickup_zones, fit_pickup_z
 from ride_demand_forecasting.config import (
     FEATURE_ORDER,
     LGBM_PARAMS,
+    METRICS_PATH,
     MODEL_PATH,
     N_PICKUP_ZONES,
     RANDOM_STATE,
@@ -54,6 +56,7 @@ from ride_demand_forecasting.features import (
     zone_hour_profile,
 )
 from ride_demand_forecasting.ingest import CENTROIDS_FILENAME, available_months, trip_path
+from ride_demand_forecasting.tracking import log_training_run
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +185,8 @@ def train(
         "train_months": [str(month) for month in train_months],
         "eval_train_months": [str(month) for month in eval_months],
         "test_month": str(end_month) if eval_months else None,
+        "window_months": window_months,
+        "gap_months": gap_months,
         "n_train_rows": fitted["n_train_rows"],
         "n_test_rows": n_test_rows,
     }
@@ -191,6 +196,17 @@ def save_artifact(artifact: dict, model_path: str | Path = MODEL_PATH) -> None:
     model_path = Path(model_path)
     model_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(artifact, model_path)
+
+
+def save_metrics(artifact: dict, metrics_path: str | Path = METRICS_PATH) -> None:
+    metrics_path = Path(metrics_path)
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics = {
+        **artifact["metrics"],
+        "n_train_rows": artifact["n_train_rows"],
+        "n_test_rows": artifact["n_test_rows"],
+    }
+    metrics_path.write_text(json.dumps(metrics, indent=2) + "\n")
 
 
 def main() -> None:
@@ -210,6 +226,7 @@ def main() -> None:
     logger.info("Training on %s ...", TLC_DATA_DIR)
     artifact = train(end_month=args.end_month)
     save_artifact(artifact)
+    save_metrics(artifact)
     elapsed = time.perf_counter() - start
     logger.info("Saved model artifact to %s in %.1fs", MODEL_PATH, elapsed)
     logger.info("Trained on %s to %s", artifact["train_months"][0], artifact["train_months"][-1])
@@ -221,6 +238,7 @@ def main() -> None:
         )
         logger.info("Test MAE: %.3f rides/day", artifact["metrics"]["mae"])
         logger.info("Test RMSE: %.3f rides/day", artifact["metrics"]["rmse"])
+    log_training_run(artifact, MODEL_PATH)
 
 
 if __name__ == "__main__":

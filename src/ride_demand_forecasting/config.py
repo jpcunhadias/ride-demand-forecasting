@@ -66,6 +66,10 @@ TLC_EVAL_GAP_MONTHS = 2
 
 RAW_DATA_PATH = Path(os.environ.get("RDF_RAW_DATA_PATH", "data/raw/train.csv"))
 MODEL_PATH = Path(os.environ.get("RDF_MODEL_PATH", "models/model.joblib"))
+# Evaluation metrics of the latest training run, as a small JSON file DVC can compare
+# across runs (`dvc metrics diff`).
+METRICS_PATH = Path(os.environ.get("RDF_METRICS_PATH", "models/metrics.json"))
+MLFLOW_EXPERIMENT = os.environ.get("RDF_MLFLOW_EXPERIMENT", "ride-demand-forecasting")
 
 # If the loaded artifact is older than this, the service logs a warning at startup -
 # a cheap, passive signal that a retrain may be overdue. Doesn't block startup or

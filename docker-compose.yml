@@ -1,0 +1,88 @@
+# Local MLOps stack: SeaweedFS (S3-compatible object storage), Postgres, an MLflow tracking
+# server backed by both, and the prediction API. `docker compose up -d` needs no
+# configuration; copy .env.example to .env to change credentials, ports or images.
+#
+# Every published port is bound to this machine only (BIND_ADDRESS, 127.0.0.1 by
+# default), so nothing here is reachable from the network unless that is changed.
+#
+# The pipeline itself runs on the host and talks to this stack:
+#   uv run --env-file .env dvc repro
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rdf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rdf-local-only}
+      POSTGRES_DB: mlflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d mlflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  seaweedfs:
+    # S3-compatible object storage in one container. With no command the image runs
+    # `weed mini -dir=/data`: it takes its credentials from the two AWS variables and
+    # creates the buckets listed in S3_BUCKET on start-up.
+    image: chrislusf/seaweedfs:4.48
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rdf-local}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rdf-local-only}
+      S3_BUCKET: mlflow,ride-demand-forecasting
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${S3_PORT:-8333}:8333"
+      # Admin UI: users, credentials and buckets. The S3 credentials above don't
+      # protect it, which is the main reason ports stay on 127.0.0.1 by default.
+      - "${BIND_ADDRESS:-127.0.0.1}:${S3_ADMIN_PORT:-23646}:23646"
+    volumes:
+      - seaweedfs-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8333"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  mlflow:
+    build: docker/mlflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
+    # Artifacts go to object storage through the tracking server, so clients only ever need its
+    # URL - no storage credentials.
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri postgresql://${POSTGRES_USER:-rdf}:${POSTGRES_PASSWORD:-rdf-local-only}@postgres:5432/mlflow
+      --artifacts-destination s3://mlflow
+      --allowed-hosts ${MLFLOW_ALLOWED_HOSTS:-localhost:*,127.0.0.1:*,mlflow:*}
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://seaweedfs:8333
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rdf-local}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rdf-local-only}
+    ports:
+      # 5001 on the host: macOS keeps 5000 for AirPlay Receiver.
+      - "${BIND_ADDRESS:-127.0.0.1}:${MLFLOW_PORT:-5001}:5000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  api:
+    build: .
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8000}:8000"
+
+volumes:
+  postgres-data:
+  seaweedfs-data:
