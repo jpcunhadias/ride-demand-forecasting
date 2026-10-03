@@ -108,3 +108,91 @@ def build_zone_hour_profile(agg_train: pd.DataFrame) -> pd.DataFrame:
     time, so the API doesn't need the caller to supply features that don't exist yet for a
     future prediction window."""
     return agg_train[["pickup_zone", "hour", "avg_ride_duration_min", "avg_ride_distance"]].copy()
+
+
+def aggregate_location_hour_daily(trips: pd.DataFrame) -> pd.DataFrame:
+    """Reduce cleaned TLC trips to one row per (pickup_location_id, date, hour).
+
+    Keeps the ride count plus the sums and counts needed to average duration and
+    distance later over any grouping of locations, so a month of trips shrinks from
+    millions of rows to a table that many months of fit in memory. The counts of
+    usable durations and distances are tracked separately from the ride count, since
+    a trip can be counted while one of its measurements is missing.
+    """
+    df = pd.DataFrame(
+        {
+            "pickup_location_id": trips["pickup_location_id"],
+            "date": trips["start_time"].dt.normalize(),
+            "hour": trips["start_time"].dt.hour,
+            "ride_duration_min": trips["ride_duration_min"],
+            "ride_distance_km": trips["ride_distance_km"],
+        }
+    )
+    return (
+        df.groupby(["pickup_location_id", "date", "hour"])
+        .agg(
+            ride_count=("hour", "size"),
+            duration_sum=("ride_duration_min", "sum"),
+            duration_n=("ride_duration_min", "count"),
+            distance_sum=("ride_distance_km", "sum"),
+            distance_n=("ride_distance_km", "count"),
+        )
+        .reset_index()
+    )
+
+
+def _with_pickup_zone(location_daily: pd.DataFrame, zone_map: pd.Series) -> pd.DataFrame:
+    return location_daily.assign(pickup_zone=location_daily["pickup_location_id"].map(zone_map))
+
+
+def zone_hour_daily_counts(
+    location_daily: pd.DataFrame, zone_map: pd.Series, zones: np.ndarray | list[int]
+) -> pd.DataFrame:
+    """One row per (pickup_zone, hour, date) with its ride count, zero-filled for every
+    combination - the same shape `aggregate_zone_hour_daily` builds from raw trips.
+
+    `zone_map` maps a TLC location ID to its pickup zone.
+    """
+    counts = (
+        _with_pickup_zone(location_daily, zone_map)
+        .groupby(["pickup_zone", "hour", "date"])["ride_count"]
+        .sum()
+    )
+    all_combos = pd.MultiIndex.from_product(
+        [zones, np.arange(24), np.sort(location_daily["date"].unique())],
+        names=["pickup_zone", "hour", "date"],
+    )
+    return counts.reindex(all_combos, fill_value=0).reset_index()
+
+
+def zone_hour_profile(
+    location_daily: pd.DataFrame, zone_map: pd.Series, zones: np.ndarray | list[int]
+) -> pd.DataFrame:
+    """The (pickup_zone, hour) -> historical avg duration/distance lookup, built from
+    trips whose measurements were usable.
+
+    A zone-hour with no usable measurement takes that zone's average across all hours
+    (or the overall average, if the zone has none at all) rather than zero, which
+    would read as "trips here take no time".
+    """
+    columns = ["duration_sum", "duration_n", "distance_sum", "distance_n"]
+    all_combos = pd.MultiIndex.from_product([zones, np.arange(24)], names=["pickup_zone", "hour"])
+    sums = (
+        _with_pickup_zone(location_daily, zone_map)
+        .groupby(["pickup_zone", "hour"])[columns]
+        .sum()
+        .reindex(all_combos, fill_value=0)
+    )
+    zone_sums = sums.groupby(level="pickup_zone").transform("sum")
+    totals = sums.sum()
+
+    profile = pd.DataFrame(index=all_combos)
+    for feature, prefix in (
+        ("avg_ride_duration_min", "duration"),
+        ("avg_ride_distance", "distance"),
+    ):
+        total, n = f"{prefix}_sum", f"{prefix}_n"
+        zone_hour_avg = sums[total] / sums[n].where(sums[n] > 0)
+        zone_avg = zone_sums[total] / zone_sums[n].where(zone_sums[n] > 0)
+        profile[feature] = zone_hour_avg.fillna(zone_avg).fillna(totals[total] / totals[n])
+    return profile.reset_index()
