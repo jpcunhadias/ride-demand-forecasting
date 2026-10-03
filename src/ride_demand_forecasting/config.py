@@ -6,7 +6,7 @@ from typing import Any
 
 # NYC administrative boundary, as fetched once via `osmnx.geocode_to_gdf`
 # in the notebook (see notebooks/ride_demand_forecasting.ipynb). Hardcoded
-# here so the production pipeline and the API don't depend on a live OSM
+# here so the API can reject out-of-area coordinates without a live OSM
 # network call.
 NYC_LAT_MIN = 40.4766
 NYC_LAT_MAX = 40.9176
@@ -19,7 +19,6 @@ NYC_LNG_MAX = -73.7002
 # 2016 data's raw coordinates; it still needs re-validating on TLC zone centre points.
 N_PICKUP_ZONES = 20
 RANDOM_STATE = 42
-TRAIN_FRACTION = 0.8
 
 FEATURE_ORDER = ["pickup_zone", "hour", "avg_ride_duration_min", "avg_ride_distance"]
 
@@ -64,7 +63,6 @@ TLC_TRAIN_WINDOW_MONTHS = 12
 # between the last training month and the test month.
 TLC_EVAL_GAP_MONTHS = 2
 
-RAW_DATA_PATH = Path(os.environ.get("RDF_RAW_DATA_PATH", "data/raw/train.csv"))
 MODEL_PATH = Path(os.environ.get("RDF_MODEL_PATH", "models/model.joblib"))
 # Evaluation metrics of the latest training run, as a small JSON file DVC can compare
 # across runs (`dvc metrics diff`).

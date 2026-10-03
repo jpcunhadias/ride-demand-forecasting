@@ -3,38 +3,13 @@ import pandas as pd
 import pytest
 
 from ride_demand_forecasting.features import (
-    add_temporal_features,
     aggregate_location_hour_daily,
     aggregate_zone_hour,
     aggregate_zone_hour_daily,
     build_zone_hour_profile,
-    haversine_distance_km,
     zone_hour_daily_counts,
     zone_hour_profile,
 )
-
-
-def test_add_temporal_features_extracts_hour() -> None:
-    df = pd.DataFrame({"start_time": ["2016-01-01 08:30:00", "2016-01-01 23:00:00"]})
-
-    result = add_temporal_features(df)
-
-    assert result["hour"].tolist() == [8, 23]
-
-
-def test_haversine_distance_km_zero_for_identical_points() -> None:
-    d = haversine_distance_km(
-        np.array([40.7]), np.array([-74.0]), np.array([40.7]), np.array([-74.0])
-    )
-    assert d[0] == pytest.approx(0.0, abs=1e-9)
-
-
-def test_haversine_distance_km_one_degree_at_equator() -> None:
-    # At the equator, cos(lat) == 1, so 1 degree of longitude is exactly
-    # radius * radians(1) of great-circle distance.
-    d = haversine_distance_km(np.array([0.0]), np.array([0.0]), np.array([0.0]), np.array([1.0]))
-    expected = 6371.0088 * np.radians(1.0)
-    assert d[0] == pytest.approx(expected, rel=1e-6)
 
 
 def test_aggregate_zone_hour_fills_missing_combos_and_computes_daily_rate() -> None:
