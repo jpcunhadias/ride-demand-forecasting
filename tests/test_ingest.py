@@ -1,5 +1,6 @@
 import shutil
 import urllib.error
+import zipfile
 from email.message import Message
 from pathlib import Path
 
@@ -81,6 +82,59 @@ def test_ingest_trips_rejects_a_file_missing_expected_columns(
 
     assert not trip_path(month, tmp_path).exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_ingest_trips_rejects_a_file_with_an_unexpected_column_type(
+    tmp_path: Path, tlc_trips: pd.DataFrame
+) -> None:
+    month = pd.Period("2026-08")
+    trips = tlc_trips.assign(tpep_pickup_datetime=tlc_trips["tpep_pickup_datetime"].astype(str))
+    download, _ = make_download(trips, {"2026-08"})
+
+    with pytest.raises(ValueError, match="unexpected type for tpep_pickup_datetime"):
+        ingest_trips(month, month, data_dir=tmp_path, download=download)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_ingest_trips_rejects_a_file_whose_data_cannot_be_read(
+    tmp_path: Path, tlc_trips: pd.DataFrame
+) -> None:
+    month = pd.Period("2026-08")
+
+    def download(url: str, dest: Path) -> None:
+        tlc_trips.to_parquet(dest)
+        # Damage the data at the start of the file. The schema is in the footer at the
+        # end, so it still lists every expected column.
+        content = bytearray(dest.read_bytes())
+        content[4:260] = b"\xff" * 256
+        dest.write_bytes(bytes(content))
+
+    with pytest.raises(ValueError, match="could not be read"):
+        ingest_trips(month, month, data_dir=tmp_path, download=download)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_ingest_zone_centroids_keeps_nothing_from_a_bad_boundary_file(
+    tmp_path: Path, taxi_zones_zip: Path
+) -> None:
+    data_dir = tmp_path / "tlc"
+
+    def bad_download(url: str, dest: Path) -> None:
+        dest.write_bytes(b"not a zip file")
+
+    with pytest.raises(zipfile.BadZipFile):
+        ingest_zone_centroids(data_dir=data_dir, download=bad_download)
+    assert list(data_dir.iterdir()) == []
+
+    # The next run downloads again instead of trusting what the failed one left.
+    def good_download(url: str, dest: Path) -> None:
+        shutil.copy(taxi_zones_zip, dest)
+
+    lookup = ingest_zone_centroids(data_dir=data_dir, download=good_download)
+    assert pd.read_csv(lookup)["location_id"].tolist() == [1, 2, 3]
+    assert sorted(p.name for p in data_dir.iterdir()) == [CENTROIDS_FILENAME, "taxi_zones.zip"]
 
 
 def test_ingest_zone_centroids_downloads_and_derives_once(
