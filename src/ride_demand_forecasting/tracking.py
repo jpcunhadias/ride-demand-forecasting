@@ -6,12 +6,13 @@ skips tracking entirely, so the pipeline runs with no external service.
 
 import logging
 import os
+import tempfile
 from pathlib import Path
 
 import pandas as pd
 
 from ride_demand_forecasting.config import LGBM_PARAMS, MLFLOW_EXPERIMENT
-from ride_demand_forecasting.registry import file_sha256
+from ride_demand_forecasting.registry import sha256
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,13 @@ def log_training_run(artifact: dict, model_path: str | Path) -> str | None:
                 "n_test_rows": artifact["n_test_rows"],
             }
         )
-        mlflow.log_artifact(str(model_path))
+        # The file is read once, and those bytes are both what is hashed and what is
+        # uploaded, so the digest can't describe anything but the uploaded model.
+        content = Path(model_path).read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp) / Path(model_path).name
+            snapshot.write_bytes(content)
+            mlflow.log_artifact(str(snapshot))
         # Set last, once the file is uploaded: these are what the promotion step finds
         # the run by, so a run whose upload failed must not carry them. The digest lets
         # it check that the file it is promoting is the one that was logged.
@@ -60,7 +67,7 @@ def log_training_run(artifact: dict, model_path: str | Path) -> str | None:
             {
                 "trained_at": artifact["trained_at"],
                 "model_artifact": Path(model_path).name,
-                "model_sha256": file_sha256(model_path),
+                "model_sha256": sha256(content),
             }
         )
     logger.info("Logged run %s to MLflow experiment %r", run.info.run_id, MLFLOW_EXPERIMENT)

@@ -23,6 +23,7 @@ keeps serving the model file.
 """
 
 import argparse
+import io
 import json
 import logging
 import tempfile
@@ -65,6 +66,14 @@ def score_artifact(
     return evaluate(fitted, location_daily)
 
 
+def _month(value: str | None) -> pd.Period | None:
+    return None if value is None else pd.Period(value, freq="M")
+
+
+def _last_month(months: list[str] | None) -> pd.Period | None:
+    return _month(months[-1]) if months else None
+
+
 def compare(
     candidate: dict, champion: dict, data_dir: Path
 ) -> tuple[float | None, float | None, str | None]:
@@ -85,13 +94,14 @@ def compare(
         return None, None, "the current model doesn't record what it was trained on"
     cutoff = pd.Period(trained_months[-1], freq="M")
 
-    # The stored evaluations are like for like only if both stopped training at the
-    # same month before the same test month.
+    # The stored evaluations are like for like only if both were tested on the same
+    # month and both are known to have stopped training at the same earlier month.
     if (
         champion.get("metrics")
-        and champion.get("test_month") == candidate["test_month"]
-        and (champion.get("eval_train_months") or [None])[-1]
-        == (candidate.get("eval_train_months") or [None])[-1]
+        and _month(champion.get("test_month")) == test_month
+        and _last_month(candidate.get("eval_train_months")) is not None
+        and _last_month(champion.get("eval_train_months"))
+        == _last_month(candidate.get("eval_train_months"))
     ):
         return candidate["metrics"]["wape"], champion["metrics"]["wape"], None
     if cutoff >= test_month:
@@ -166,14 +176,16 @@ def promote(
 
     from mlflow import MlflowClient
 
-    candidate = joblib.load(model_path)
+    # Read once: the same bytes are checked against the logged digest and loaded.
+    content = Path(model_path).read_bytes()
+    candidate = joblib.load(io.BytesIO(content))
     run = registry.find_training_run(candidate["trained_at"])
     if run is None:
         raise RuntimeError(
             f"{model_path} was not logged to MLflow. Run `ride-demand-train` with "
             "MLFLOW_TRACKING_URI set, then promote."
         )
-    if run.data.tags.get("model_sha256") != registry.file_sha256(model_path):
+    if run.data.tags.get("model_sha256") != registry.sha256(content):
         raise RuntimeError(
             f"{model_path} is not the file its training run logged to MLflow, so its "
             "scores can't be trusted to describe it. Train again, then promote."
@@ -190,7 +202,12 @@ def promote(
     )
 
     if current is not None and current.run_id == run.info.run_id:
-        # Nothing to decide, and nothing to record over the decision that promoted it.
+        # Nothing to decide. Hand back the decision that put it in service, so that a
+        # run interrupted after the alias moved still ends with the right record.
+        logger.info("This model is already the current one")
+        recorded = run.data.tags.get("promotion_decision")
+        if recorded is not None:
+            return json.loads(recorded)
         decision["reason"] = ALREADY_CURRENT
         return decision
     if current is not None and candidate_wape is not None:
@@ -216,21 +233,28 @@ def promote(
     # The record is written before the alias moves. If the move then fails, the next
     # run finds this model not yet current, decides again and finishes the job; the
     # other order could leave a model in service with no record of why.
+    # Written synchronously whatever MLflow's logging mode, or "before" would mean
+    # nothing. Promotion is assumed to run one at a time, as it does in the pipeline.
     client = MlflowClient()
-    client.set_tag(run.info.run_id, "promoted", str(decision["promoted"]).lower())
-    client.set_tag(run.info.run_id, "promotion_reason", decision["reason"])
-    client.set_tag(run.info.run_id, "promotion_decision", json.dumps(decision))
+    run_id = run.info.run_id
+    client.set_tag(run_id, "promoted", str(decision["promoted"]).lower(), synchronous=True)
+    client.set_tag(run_id, "promotion_reason", decision["reason"], synchronous=True)
+    client.set_tag(run_id, "promotion_decision", json.dumps(decision), synchronous=True)
     for name in ("candidate_wape", "current_wape"):
         if decision[name] is not None:
-            client.log_metric(run.info.run_id, f"promotion_{name}", decision[name])
+            client.log_metric(run_id, f"promotion_{name}", decision[name], synchronous=True)
     if decision["promoted"]:
         registry.set_champion(version.version)
     return decision
 
 
 def record_decision(decision: dict, path: str | Path = PROMOTION_PATH) -> bool:
-    """Write the decision file, unless that would replace the record of a real decision
-    with the no-op of running promotion again. Returns whether it was written."""
+    """Write the decision file. Returns whether it was written.
+
+    The one thing not written over an existing file is the bare "already current"
+    result, which only arises for a version put in service by hand and says nothing
+    about how it got there.
+    """
     if decision["reason"] == ALREADY_CURRENT and Path(path).exists():
         return False
     save_decision(decision, path)

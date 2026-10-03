@@ -1,5 +1,6 @@
 import datetime as dt
 import logging
+import math
 import os
 import tempfile
 import threading
@@ -19,6 +20,7 @@ from ride_demand_forecasting.api.schemas import (
     RankingsResponse,
 )
 from ride_demand_forecasting.config import (
+    DEFAULT_REGISTRY_LOAD_TIMEOUT_S,
     MODEL_PATH,
     MODEL_STALENESS_WARNING_DAYS,
     REGISTRY_LOAD_TIMEOUT_S,
@@ -68,15 +70,26 @@ def load_promoted_model() -> tuple[PredictionService, str] | None:
             logger.exception("Could not load the promoted model from MLflow")
             outcome.append(None)
 
-    # A daemon thread, so a lookup that never returns can't keep the process alive.
-    worker = threading.Thread(target=fetch, daemon=True)
-    worker.start()
-    worker.join(REGISTRY_LOAD_TIMEOUT_S)
+    # An unusable setting (zero, negative, infinite, not a number) falls back to the
+    # default rather than breaking startup.
+    timeout = REGISTRY_LOAD_TIMEOUT_S
+    if not (math.isfinite(timeout) and timeout > 0):
+        timeout = DEFAULT_REGISTRY_LOAD_TIMEOUT_S
+    try:
+        # A daemon thread, so a lookup that never returns doesn't hold up serving.
+        # MLflow's own download threads are not daemons and can still delay the process
+        # exiting if a download is stalled at shutdown.
+        worker = threading.Thread(target=fetch, daemon=True)
+        worker.start()
+        worker.join(timeout)
+    except Exception:
+        logger.exception("Could not start loading the promoted model from MLflow")
+        return None
     if worker.is_alive():
         logger.warning(
             "Loading the promoted model from MLflow took longer than %.0fs - "
             "serving the model file instead",
-            REGISTRY_LOAD_TIMEOUT_S,
+            timeout,
         )
         return None
     return outcome[0]

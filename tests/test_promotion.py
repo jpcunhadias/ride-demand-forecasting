@@ -13,6 +13,7 @@ from mlflow.exceptions import MlflowException
 from ride_demand_forecasting import registry
 from ride_demand_forecasting.api import main as api_main
 from ride_demand_forecasting.api.main import app
+from ride_demand_forecasting.config import MLFLOW_EXPERIMENT
 from ride_demand_forecasting.ingest import CENTROIDS_FILENAME
 from ride_demand_forecasting.promote import (
     ALREADY_CURRENT,
@@ -168,14 +169,14 @@ def test_promoting_the_same_model_again_changes_nothing(
     tmp_path: Path, mlflow_store: str, august_model: dict, tlc_data_dir: Path
 ) -> None:
     path = log_model(august_model, tmp_path, "august")
-    promote(model_path=path, data_dir=tlc_data_dir)
+    first = promote(model_path=path, data_dir=tlc_data_dir)
 
-    decision = promote(model_path=path, data_dir=tlc_data_dir)
+    again = promote(model_path=path, data_dir=tlc_data_dir)
 
-    assert decision["promoted"] is False
-    assert decision["reason"] == "this model is already the current one"
+    # The second run hands back the decision that put the model in service.
+    assert again == first
+    assert again["promoted"] is True
     assert [int(v.version) for v in registry.list_versions()] == [1]
-    # The record of the decision that promoted it is left as it was.
     assert describe_versions()["promoted"].tolist() == ["true"]
 
 
@@ -325,17 +326,16 @@ def test_registry_error_is_not_mistaken_for_an_empty_registry(
 ) -> None:
     promote(model_path=log_model(july_model, tmp_path, "july"), data_dir=tlc_data_dir)
     august_path = log_model(august_model, tmp_path, "august")
-    lookup = MlflowClient.get_model_version_by_alias
 
-    def failing_lookup(self, name, alias):
+    def failing_lookup(self, name):
         raise MlflowException("server error", error_code=1)  # INTERNAL_ERROR
 
-    monkeypatch.setattr(MlflowClient, "get_model_version_by_alias", failing_lookup)
-    with pytest.raises(MlflowException, match="server error"):
-        promote(model_path=august_path, data_dir=tlc_data_dir, tolerance=ALWAYS_WITHIN)
+    with monkeypatch.context() as patch:
+        patch.setattr(MlflowClient, "get_registered_model", failing_lookup)
+        with pytest.raises(MlflowException, match="server error"):
+            promote(model_path=august_path, data_dir=tlc_data_dir, tolerance=ALWAYS_WITHIN)
 
     # Nothing was promoted on the strength of a failed lookup.
-    monkeypatch.setattr(MlflowClient, "get_model_version_by_alias", lookup)
     assert int(registry.champion().version) == 1
 
 
@@ -357,9 +357,27 @@ def test_run_whose_model_upload_failed_cannot_be_promoted(
         with pytest.raises(OSError, match="upload failed"):
             log_training_run(august_model, path)
 
+    # The failed run carries nothing promotion could find it by, whatever its status.
+    failed = mlflow.search_runs(experiment_names=[MLFLOW_EXPERIMENT], output_format="list")
+    assert len(failed) == 1
+    assert failed[0].info.status == "FAILED"
+    assert "trained_at" not in failed[0].data.tags
     with pytest.raises(RuntimeError, match="was not logged to MLflow"):
         promote(model_path=path, data_dir=tlc_data_dir)
     assert registry.list_versions() == []
+
+
+def test_unfinished_run_is_not_found_even_if_it_is_tagged(
+    mlflow_store: str, august_model: dict
+) -> None:
+    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+    run = mlflow.start_run()
+    mlflow.set_tag("trained_at", august_model["trained_at"])
+
+    assert registry.find_training_run(august_model["trained_at"]) is None
+
+    mlflow.end_run()
+    assert registry.find_training_run(august_model["trained_at"]).info.run_id == run.info.run_id
 
 
 def test_model_file_that_differs_from_the_logged_one_is_refused(
@@ -473,6 +491,9 @@ def test_failed_alias_move_is_finished_by_the_next_run(
         with pytest.raises(ConnectionError):
             promote(model_path=path, data_dir=tlc_data_dir)
     assert registry.champion() is None
+    # The decision was already on the run when the move failed.
+    run = registry.find_training_run(august_model["trained_at"])
+    assert json.loads(run.data.tags["promotion_decision"])["promoted"] is True
 
     decision = promote(model_path=path, data_dir=tlc_data_dir)
 
@@ -480,16 +501,106 @@ def test_failed_alias_move_is_finished_by_the_next_run(
     assert int(registry.champion().version) == 1
 
 
-def test_decision_file_survives_running_promotion_again(tmp_path: Path) -> None:
+def test_decision_file_is_repaired_by_running_promotion_again(
+    tmp_path: Path, mlflow_store: str, august_model: dict, tlc_data_dir: Path
+) -> None:
+    model_path = log_model(august_model, tmp_path, "august")
+    decision_path = tmp_path / "promotion.json"
+    first = promote(model_path=model_path, data_dir=tlc_data_dir)
+    # As if the process had died after the alias moved and before the file was
+    # written: the file still describes an earlier attempt.
+    decision_path.write_text(json.dumps({"promoted": False, "reason": "an earlier attempt"}))
+
+    record_decision(promote(model_path=model_path, data_dir=tlc_data_dir), decision_path)
+
+    assert json.loads(decision_path.read_text()) == first
+
+
+def test_bare_already_current_result_does_not_replace_a_decision_file(tmp_path: Path) -> None:
     path = tmp_path / "promotion.json"
     promoted = {"promoted": True, "reason": "there is no current model"}
-    repeat = {"promoted": False, "reason": ALREADY_CURRENT}
+    by_hand = {"promoted": False, "reason": ALREADY_CURRENT}
 
     assert record_decision(promoted, path) is True
-    assert record_decision(repeat, path) is False
+    assert record_decision(by_hand, path) is False
     assert json.loads(path.read_text()) == promoted
     # With no earlier record there is nothing to protect, and the pipeline needs the file.
-    assert record_decision(repeat, tmp_path / "fresh.json") is True
+    assert record_decision(by_hand, tmp_path / "fresh.json") is True
+
+
+def test_stored_scores_need_a_known_evaluation_cutoff_on_both_sides(
+    tmp_path: Path, mlflow_store: str, august_model: dict, tlc_data_dir: Path
+) -> None:
+    unknown = {**august_model, "eval_train_months": []}
+    promote(model_path=log_model(unknown, tmp_path, "first"), data_dir=tlc_data_dir)
+
+    decision = promote(
+        model_path=log_model(retrained(unknown), tmp_path, "second"),
+        data_dir=tlc_data_dir,
+        tolerance=ALWAYS_WITHIN,
+    )
+
+    # Neither says when its evaluation copy stopped training, so their scores can't
+    # be assumed comparable.
+    assert decision["promoted"] is False
+    assert "no fair comparison" in decision["reason"]
+
+
+def test_months_written_differently_still_match(
+    tmp_path: Path, mlflow_store: str, august_model: dict, tlc_data_dir: Path
+) -> None:
+    promote(model_path=log_model(august_model, tmp_path, "first"), data_dir=tlc_data_dir)
+    same = {**retrained(august_model), "test_month": "2026-8"}
+    same["eval_train_months"] = [m.replace("-0", "-") for m in august_model["eval_train_months"]]
+
+    decision = promote(model_path=log_model(same, tmp_path, "second"), data_dir=tlc_data_dir)
+
+    assert decision["promoted"] is True
+    assert decision["current_wape"] == august_model["metrics"]["wape"]
+
+
+def test_alias_pointing_at_a_missing_version_is_an_error_not_an_empty_registry(
+    tmp_path: Path,
+    mlflow_store: str,
+    monkeypatch: pytest.MonkeyPatch,
+    july_model: dict,
+    tlc_data_dir: Path,
+) -> None:
+    promote(model_path=log_model(july_model, tmp_path, "july"), data_dir=tlc_data_dir)
+
+    def missing_version(self, name, version):
+        raise MlflowException("no such version", error_code=1001)  # RESOURCE_DOES_NOT_EXIST
+
+    monkeypatch.setattr(MlflowClient, "get_model_version", missing_version)
+
+    with pytest.raises(MlflowException, match="no such version"):
+        registry.champion()
+
+
+def test_registry_with_no_model_or_no_alias_is_empty(
+    tmp_path: Path, mlflow_store: str, august_model: dict, tlc_data_dir: Path
+) -> None:
+    assert registry.champion() is None  # no registered model at all
+
+    unevaluated = {**august_model, "metrics": {}, "test_month": None, "eval_train_months": []}
+    promote(model_path=log_model(unevaluated, tmp_path, "m"), data_dir=tlc_data_dir)
+
+    assert len(registry.list_versions()) == 1
+    assert registry.champion() is None  # a registered model, but nothing promoted
+
+
+@pytest.mark.parametrize("bad_timeout", [float("inf"), float("nan"), 0.0, -5.0])
+def test_api_starts_whatever_the_registry_timeout_is_set_to(
+    bad_timeout: float,
+    mlflow_store: str,
+    monkeypatch: pytest.MonkeyPatch,
+    model_artifact_path: Path,
+) -> None:
+    monkeypatch.setenv("RDF_MODEL_PATH", str(model_artifact_path))
+    monkeypatch.setattr(api_main, "REGISTRY_LOAD_TIMEOUT_S", bad_timeout)
+
+    with TestClient(app) as client:
+        assert client.get("/health").json()["model_source"] == "file"
 
 
 def test_values_with_quotes_are_refused_in_registry_searches(mlflow_store: str) -> None:

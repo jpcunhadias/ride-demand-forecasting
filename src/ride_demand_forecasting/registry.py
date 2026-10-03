@@ -19,21 +19,14 @@ from ride_demand_forecasting.config import MLFLOW_EXPERIMENT, MLFLOW_MODEL_NAME
 logger = logging.getLogger(__name__)
 
 CHAMPION_ALIAS = "champion"
-# How MLflow backends report "no such model" or "no such alias". Anything else is a
-# real failure and must not be mistaken for an empty registry.
-NOT_FOUND_ERRORS = {"RESOURCE_DOES_NOT_EXIST", "INVALID_PARAMETER_VALUE"}
 
 
 def tracking_enabled() -> bool:
     return bool(os.environ.get("MLFLOW_TRACKING_URI"))
 
 
-def file_sha256(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as file:
-        for chunk in iter(lambda: file.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def sha256(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
 
 
 def _filter_literal(value: str) -> str:
@@ -83,18 +76,25 @@ def register_run(run_id: str) -> Any:
 def champion() -> Any | None:
     """The model version currently in service, or None if nothing has been promoted.
 
-    Raises on any other MLflow error. Returning None for a failed lookup would read as
+    "Nothing promoted" is established directly: the registered model doesn't exist, or
+    it has no `champion` alias. Everything else raises - including an alias that points
+    at a version that can't be found. Returning None for a failed lookup would read as
     "nothing is in service" and let a new model be promoted with no comparison.
     """
     from mlflow import MlflowClient
     from mlflow.exceptions import MlflowException
 
+    client = MlflowClient()
     try:
-        return MlflowClient().get_model_version_by_alias(MLFLOW_MODEL_NAME, CHAMPION_ALIAS)
+        registered = client.get_registered_model(MLFLOW_MODEL_NAME)
     except MlflowException as error:
-        if error.error_code in NOT_FOUND_ERRORS:
+        if error.error_code == "RESOURCE_DOES_NOT_EXIST":
             return None
         raise
+    version = (registered.aliases or {}).get(CHAMPION_ALIAS)
+    if version is None:
+        return None
+    return client.get_model_version(MLFLOW_MODEL_NAME, str(version))
 
 
 def set_champion(version: str | int) -> None:
