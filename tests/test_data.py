@@ -8,6 +8,7 @@ from ride_demand_forecasting.data import (
     filter_geo_outliers,
     load_raw_trips,
     load_tlc_trips,
+    validate_daily_coverage,
 )
 from ride_demand_forecasting.zones import compute_zone_centroids
 
@@ -100,3 +101,34 @@ def test_load_tlc_trips_joins_zone_centre_points(loaded_tlc_trips: pd.DataFrame)
     assert df.loc[2, ["start_lat", "start_lng"]].tolist() == pytest.approx([21.0, 23.0])
     # Only the trip dropped off in a zone with no centre point lacks end coordinates.
     assert df.loc[df["end_lat"].isna(), "dropoff_location_id"].tolist() == [265]
+
+
+def _daily_totals(month: str, totals: dict[int, int] | None = None) -> pd.DataFrame:
+    """A location-daily table with 100 rides on every day of `month`, except the days
+    overridden in `totals` (0 removes the day altogether)."""
+    period = pd.Period(month, freq="M")
+    days = pd.date_range(period.start_time, period.end_time.normalize(), freq="D")
+    counts = {day: (totals or {}).get(day.day, 100) for day in days}
+    return pd.DataFrame(
+        {
+            "pickup_location_id": 1,
+            "date": [day for day, count in counts.items() if count > 0],
+            "hour": 8,
+            "ride_count": [count for count in counts.values() if count > 0],
+        }
+    )
+
+
+def test_validate_daily_coverage_accepts_a_full_month_with_a_quiet_day() -> None:
+    # A fifth of a normal day is a real demand shock, not a reporting gap.
+    validate_daily_coverage(_daily_totals("2026-08", {23: 20}), pd.Period("2026-08"))
+
+
+def test_validate_daily_coverage_rejects_a_missing_day() -> None:
+    with pytest.raises(ValueError, match="no trips on: 2026-08-15"):
+        validate_daily_coverage(_daily_totals("2026-08", {15: 0}), pd.Period("2026-08"))
+
+
+def test_validate_daily_coverage_rejects_an_implausibly_low_day() -> None:
+    with pytest.raises(ValueError, match=r"implausibly few trips on: 2026-08-15 \(2\)"):
+        validate_daily_coverage(_daily_totals("2026-08", {15: 2}), pd.Period("2026-08"))
