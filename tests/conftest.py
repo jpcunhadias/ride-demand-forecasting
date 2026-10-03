@@ -103,3 +103,32 @@ def taxi_zones_zip(tmp_path: Path) -> Path:
         for file in sorted(shp_dir.iterdir()):
             archive.write(file, f"taxi_zones/{file.name}")
     return zip_path
+
+
+@pytest.fixture
+def tlc_trips() -> pd.DataFrame:
+    """A few rows in the TLC yellow taxi schema for August 2026: three clean trips,
+    plus one each of the cases `load_tlc_trips` has to handle."""
+    pickups = pd.to_datetime(
+        [
+            "2026-08-01 08:00",
+            "2026-08-02 09:30",
+            "2026-08-03 18:15",
+            "2026-07-31 23:50",  # stray timestamp from the previous month
+            "2026-08-04 10:00",  # dropoff before pickup
+            "2026-08-05 11:00",  # pickup zone with no centre point
+            "2026-08-06 12:00",  # dropoff zone with no centre point
+        ]
+    )
+    minutes = [10, 20, 30, 10, -5, 10, 15]
+    return pd.DataFrame(
+        {
+            "VendorID": 1,
+            "tpep_pickup_datetime": pickups,
+            "tpep_dropoff_datetime": pickups + pd.to_timedelta(minutes, "min"),
+            "trip_distance": [1.0, 2.0, 3.0, 1.0, 1.0, 1.0, 5.0],
+            "PULocationID": [1, 2, 3, 1, 1, 264, 2],
+            "DOLocationID": [2, 3, 1, 2, 2, 1, 265],
+            "fare_amount": [8.0, 15.0, 22.0, 8.0, 8.0, 8.0, 30.0],
+        }
+    )
