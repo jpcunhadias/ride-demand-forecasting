@@ -114,12 +114,13 @@ def synthetic_zone_centroids() -> pd.DataFrame:
 
 
 def synthetic_tlc_month(month: str, rng: np.random.Generator) -> pd.DataFrame:
-    """A month of clean trips in the TLC schema, with every day covered and demand
-    skewed towards the low-numbered zones."""
+    """A month of clean trips in the TLC schema, with every day covered, demand skewed
+    towards the low-numbered zones, and twice as many trips on weekend days."""
     period = pd.Period(month, freq="M")
     days = pd.date_range(period.start_time, period.end_time.normalize(), freq="D")
-    n = len(days) * TRIPS_PER_DAY
-    pickups = np.repeat(days, TRIPS_PER_DAY) + pd.to_timedelta(rng.integers(0, 86400, n), "s")
+    trips_per_day = np.where(days.dayofweek >= 5, 2 * TRIPS_PER_DAY, TRIPS_PER_DAY)
+    n = int(trips_per_day.sum())
+    pickups = np.repeat(days, trips_per_day) + pd.to_timedelta(rng.integers(0, 86400, n), "s")
     location_ids = np.arange(1, N_TLC_FIXTURE_LOCATIONS + 1)
     weights = 1 / location_ids
     return pd.DataFrame(

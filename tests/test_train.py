@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 from pathlib import Path
 
@@ -17,6 +18,7 @@ def test_train_produces_a_complete_artifact(trained_artifact: dict) -> None:
     assert artifact["feature_order"] == [
         "pickup_zone",
         "hour",
+        "day_of_week",
         "avg_ride_duration_min",
         "avg_ride_distance",
     ]
@@ -79,10 +81,21 @@ def test_train_fails_clearly_when_nothing_is_ingested(tmp_path: Path) -> None:
 def test_saved_artifact_round_trips_through_prediction_service(model_artifact_path: Path) -> None:
     service = PredictionService(model_path=model_artifact_path)
 
-    prediction = service.predict_zone(pickup_zone=0, hour=12)
+    prediction = service.predict_zone(pickup_zone=0, hour=12, date=dt.date(2026, 9, 14))
 
     assert isinstance(prediction, float)
     assert prediction >= 0
+
+
+def test_predictions_follow_the_day_of_the_week(model_artifact_path: Path) -> None:
+    service = PredictionService(model_path=model_artifact_path)
+    monday, saturday = dt.date(2026, 9, 14), dt.date(2026, 9, 19)
+
+    def total(date: dt.date) -> float:
+        return sum(prediction for _, prediction in service.rank(hour=12, date=date))
+
+    # The synthetic data has twice the trips on weekend days.
+    assert total(saturday) > 1.5 * total(monday)
 
 
 def test_age_days_is_near_zero_right_after_training(tmp_path: Path, trained_artifact: dict) -> None:

@@ -20,7 +20,17 @@ NYC_LNG_MAX = -73.7002
 N_PICKUP_ZONES = 20
 RANDOM_STATE = 42
 
-FEATURE_ORDER = ["pickup_zone", "hour", "avg_ride_duration_min", "avg_ride_distance"]
+# `day_of_week` (0 = Monday) is what lets the model say anything a per-zone-hour average
+# couldn't: without it, every input is fixed for a given zone and hour.
+FEATURE_ORDER = [
+    "pickup_zone",
+    "hour",
+    "day_of_week",
+    "avg_ride_duration_min",
+    "avg_ride_distance",
+]
+# TLC timestamps are New York local time, so "today" for a request with no date is too.
+SERVICE_TIMEZONE = "America/New_York"
 
 # LightGBM hyperparameters tuned via RandomizedSearchCV + TimeSeriesSplit on the
 # day-level dataset (see the notebook's "Model Validation" section) - LightGBM edged

@@ -19,7 +19,9 @@ record on the 2016 dataset, unchanged):
    window) - a historical (pickup_zone, hour) profile is built from training
    data instead, and stored in the artifact for lookup.
 5. Training rows are day-level (one `(pickup_zone, hour, date)` observation
-   each), zero-filled so the model sees genuine zero-demand zone-hour-days.
+   each), zero-filled so the model sees genuine zero-demand zone-hour-days,
+   and carry the day of the week - the one input that varies within a
+   zone-hour, and so the one that lets the model beat a plain average.
 6. LightGBM (tuned) replaces the untuned XGBoost baseline - it edged out an
    identically-tuned XGBoost in the notebook's Model Validation comparison.
 """
@@ -99,6 +101,7 @@ def _features_and_target(
     daily = zone_hour_daily_counts(location_daily, fitted["zone_map"], fitted["zones"]).merge(
         fitted["zone_hour_profile"], on=["pickup_zone", "hour"], how="left"
     )
+    daily["day_of_week"] = daily["date"].dt.dayofweek
     X = daily[FEATURE_ORDER].copy()
     X[["pickup_zone"]] = fitted["encoder"].transform(X[["pickup_zone"]])
     return X, daily["ride_count"]
