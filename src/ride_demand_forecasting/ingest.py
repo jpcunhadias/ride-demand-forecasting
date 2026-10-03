@@ -60,6 +60,15 @@ def trip_path(month: pd.Period, data_dir: str | Path = TLC_DATA_DIR) -> Path:
     return Path(data_dir) / f"yellow_tripdata_{month}.parquet"
 
 
+def available_months(data_dir: str | Path = TLC_DATA_DIR) -> list[pd.Period]:
+    """The months that have a trip file on disk, oldest first."""
+    prefix = "yellow_tripdata_"
+    return sorted(
+        pd.Period(path.stem.removeprefix(prefix), freq="M")
+        for path in Path(data_dir).glob(f"{prefix}*.parquet")
+    )
+
+
 def trip_url(month: pd.Period) -> str:
     return f"{TLC_BASE_URL}/trip-data/yellow_tripdata_{month}.parquet"
 

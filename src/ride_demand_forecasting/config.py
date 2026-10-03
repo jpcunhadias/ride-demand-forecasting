@@ -57,6 +57,13 @@ TLC_MAX_SPEED_MPH = 70
 # blizzard in the notebook still reached about a fifth of a normal day.
 TLC_MIN_DAILY_SHARE_OF_MEDIAN = 0.05
 
+# Each training run uses the most recent months up to this many.
+TLC_TRAIN_WINDOW_MONTHS = 12
+# Trip data arrives about two months late, so a model is always serving predictions at
+# least that far past the end of its training data. Evaluation leaves the same distance
+# between the last training month and the test month.
+TLC_EVAL_GAP_MONTHS = 2
+
 RAW_DATA_PATH = Path(os.environ.get("RDF_RAW_DATA_PATH", "data/raw/train.csv"))
 MODEL_PATH = Path(os.environ.get("RDF_MODEL_PATH", "models/model.joblib"))
 

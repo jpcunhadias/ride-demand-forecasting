@@ -1,4 +1,5 @@
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -7,6 +8,7 @@ import pytest
 import shapefile
 
 from ride_demand_forecasting.config import NYC_LAT_MAX, NYC_LAT_MIN, NYC_LNG_MAX, NYC_LNG_MIN
+from ride_demand_forecasting.ingest import CENTROIDS_FILENAME, trip_path
 from ride_demand_forecasting.train import save_artifact, train
 
 N_ROWS = 600
@@ -49,14 +51,6 @@ def raw_trips_csv(tmp_path: Path) -> Path:
 
     path = tmp_path / "train.csv"
     df.to_csv(path, index=False)
-    return path
-
-
-@pytest.fixture
-def model_artifact_path(tmp_path: Path, raw_trips_csv: Path) -> Path:
-    artifact = train(raw_data_path=raw_trips_csv)
-    path = tmp_path / "model.joblib"
-    save_artifact(artifact, model_path=path)
     return path
 
 
@@ -141,3 +135,79 @@ def tlc_trips() -> pd.DataFrame:
             "fare_amount": [row[5] for row in rows],
         }
     )
+
+
+TLC_FIXTURE_MONTHS = ["2026-04", "2026-05", "2026-06", "2026-07", "2026-08"]
+N_TLC_FIXTURE_LOCATIONS = 30
+TRIPS_PER_DAY = 150
+
+
+def synthetic_zone_centroids() -> pd.DataFrame:
+    """Centre points for a 6x5 grid of made-up taxi zones inside the NYC bbox."""
+    lat, lng = np.meshgrid(np.linspace(40.55, 40.85, 6), np.linspace(-74.15, -73.75, 5))
+    location_ids = np.arange(1, N_TLC_FIXTURE_LOCATIONS + 1)
+    return pd.DataFrame(
+        {
+            "location_id": location_ids,
+            "zone": [f"Zone {i}" for i in location_ids],
+            "borough": "Test",
+            "lat": lat.ravel(),
+            "lng": lng.ravel(),
+        }
+    )
+
+
+def synthetic_tlc_month(month: str, rng: np.random.Generator) -> pd.DataFrame:
+    """A month of clean trips in the TLC schema, with every day covered and demand
+    skewed towards the low-numbered zones."""
+    period = pd.Period(month, freq="M")
+    days = pd.date_range(period.start_time, period.end_time.normalize(), freq="D")
+    n = len(days) * TRIPS_PER_DAY
+    pickups = np.repeat(days, TRIPS_PER_DAY) + pd.to_timedelta(rng.integers(0, 86400, n), "s")
+    location_ids = np.arange(1, N_TLC_FIXTURE_LOCATIONS + 1)
+    weights = 1 / location_ids
+    return pd.DataFrame(
+        {
+            "VendorID": 1,
+            "tpep_pickup_datetime": pickups,
+            "tpep_dropoff_datetime": pickups + pd.to_timedelta(rng.integers(300, 2400, n), "s"),
+            "trip_distance": rng.uniform(0.5, 8.0, n),
+            "PULocationID": rng.choice(location_ids, n, p=weights / weights.sum()),
+            "DOLocationID": rng.choice(location_ids, n),
+            "fare_amount": rng.uniform(5.0, 60.0, n),
+        }
+    )
+
+
+def write_tlc_data_dir(data_dir: Path, months: list[str]) -> Path:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    synthetic_zone_centroids().to_csv(data_dir / CENTROIDS_FILENAME, index=False)
+    rng = np.random.default_rng(0)
+    for month in months:
+        synthetic_tlc_month(month, rng).to_parquet(trip_path(pd.Period(month), data_dir))
+    return data_dir
+
+
+@pytest.fixture
+def make_tlc_data_dir() -> Callable[[Path, list[str]], Path]:
+    return write_tlc_data_dir
+
+
+@pytest.fixture(scope="session")
+def tlc_data_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """An ingested-data directory as `ride-demand-ingest` would leave it: the zone
+    centre-point lookup plus five consecutive monthly trip files."""
+    return write_tlc_data_dir(tmp_path_factory.mktemp("tlc"), TLC_FIXTURE_MONTHS)
+
+
+@pytest.fixture(scope="session")
+def trained_artifact(tlc_data_dir: Path) -> dict:
+    """Trained once per test session. Treat it as read-only - copy before changing it."""
+    return train(data_dir=tlc_data_dir)
+
+
+@pytest.fixture(scope="session")
+def model_artifact_path(tmp_path_factory: pytest.TempPathFactory, trained_artifact: dict) -> Path:
+    path = tmp_path_factory.mktemp("model") / "model.joblib"
+    save_artifact(trained_artifact, model_path=path)
+    return path
