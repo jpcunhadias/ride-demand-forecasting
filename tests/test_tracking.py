@@ -5,7 +5,12 @@ import pandas as pd
 import pytest
 
 from ride_demand_forecasting.config import LGBM_PARAMS, MLFLOW_EXPERIMENT, N_PICKUP_ZONES
-from ride_demand_forecasting.tracking import log_backtest, log_training_run, run_params
+from ride_demand_forecasting.tracking import (
+    log_backtest,
+    log_training_run,
+    log_tuning,
+    run_params,
+)
 
 
 def test_log_training_run_is_skipped_without_a_tracking_uri(
@@ -92,3 +97,30 @@ def test_log_backtest_is_skipped_without_a_tracking_uri(monkeypatch: pytest.Monk
     monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
 
     assert log_backtest(pd.DataFrame({"window_months": [3]}), gap_months=2) == []
+
+
+def test_log_tuning_records_the_best_trial_against_the_current_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    mlflow.set_tracking_uri(tracking_uri)
+    results = pd.DataFrame(
+        {
+            "trial": ["trial-2", "current", "trial-1"],
+            "wape": [0.20, 0.25, 0.30],
+            "mae": [4.0, 5.0, 6.0],
+            "rmse": [7.0, 8.0, 9.0],
+            "folds": [6, 6, 6],
+            "params": [{"num_leaves": 31}, {"num_leaves": 114}, {"num_leaves": 200}],
+        }
+    )
+
+    run = mlflow.get_run(log_tuning(results))
+
+    assert run.data.params["best_trial"] == "trial-2"
+    assert run.data.params["n_trials"] == "2"
+    assert run.data.params["lgbm_num_leaves"] == "31"
+    assert run.data.metrics["wape"] == pytest.approx(0.20)
+    assert run.data.metrics["current_wape"] == pytest.approx(0.25)
