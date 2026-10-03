@@ -116,7 +116,8 @@ def features_and_target(
         fitted["zone_hour_profile"], on=["pickup_zone", "hour"], how="left"
     )
     daily["day_of_week"] = daily["date"].dt.dayofweek
-    X = daily[FEATURE_ORDER].copy()
+    # A stored model may predate the current feature set, so it brings its own.
+    X = daily[fitted.get("feature_order", FEATURE_ORDER)].copy()
     X[["pickup_zone"]] = fitted["encoder"].transform(X[["pickup_zone"]])
     return X, daily["ride_count"]
 

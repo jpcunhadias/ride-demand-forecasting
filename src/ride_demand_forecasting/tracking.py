@@ -43,6 +43,11 @@ def log_training_run(artifact: dict, model_path: str | Path) -> str | None:
 
     mlflow.set_experiment(MLFLOW_EXPERIMENT)
     with mlflow.start_run(run_name=f"train-{artifact['train_months'][-1]}") as run:
+        # `trained_at` is what lets the promotion step find this run again from the
+        # model file alone.
+        mlflow.set_tags(
+            {"trained_at": artifact["trained_at"], "model_artifact": Path(model_path).name}
+        )
         mlflow.log_params(run_params(artifact))
         mlflow.log_metrics(
             {

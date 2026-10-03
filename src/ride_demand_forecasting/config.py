@@ -87,6 +87,14 @@ MODEL_PATH = Path(os.environ.get("RDF_MODEL_PATH", "models/model.joblib"))
 # across runs (`dvc metrics diff`).
 METRICS_PATH = Path(os.environ.get("RDF_METRICS_PATH", "models/metrics.json"))
 MLFLOW_EXPERIMENT = os.environ.get("RDF_MLFLOW_EXPERIMENT", "ride-demand-forecasting")
+# The registered model whose promoted version the API serves when MLflow is configured.
+MLFLOW_MODEL_NAME = os.environ.get("RDF_MLFLOW_MODEL_NAME", "ride-demand-forecasting")
+# A newly trained model replaces the one in service unless its error (WAPE) on the same
+# month, with the same data to learn from, is more than this much higher, relatively.
+# A margin rather than "must be better", so that noise alone never blocks an update.
+PROMOTION_TOLERANCE = float(os.environ.get("RDF_PROMOTION_TOLERANCE", "0.05"))
+# The outcome of the latest promotion decision, for DVC and for people.
+PROMOTION_PATH = Path(os.environ.get("RDF_PROMOTION_PATH", "models/promotion.json"))
 
 # If the loaded artifact is older than this, the service logs a warning at startup -
 # a cheap, passive signal that a retrain may be overdue. Doesn't block startup or

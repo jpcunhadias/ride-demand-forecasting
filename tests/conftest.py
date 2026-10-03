@@ -168,3 +168,16 @@ def model_artifact_path(tmp_path_factory: pytest.TempPathFactory, trained_artifa
     path = tmp_path_factory.mktemp("model") / "model.joblib"
     save_artifact(trained_artifact, model_path=path)
     return path
+
+
+@pytest.fixture
+def mlflow_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A throwaway MLflow tracking store and model registry on disk, standing in for a
+    server. MLflow only allows a file store on request."""
+    import mlflow
+
+    uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", uri)
+    mlflow.set_tracking_uri(uri)
+    return uri

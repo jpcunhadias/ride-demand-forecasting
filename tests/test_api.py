@@ -13,6 +13,7 @@ from ride_demand_forecasting.train import save_artifact
 @pytest.fixture
 def client(model_artifact_path, monkeypatch):
     monkeypatch.setenv("RDF_MODEL_PATH", str(model_artifact_path))
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
     with TestClient(app) as test_client:
         yield test_client
 
@@ -21,7 +22,7 @@ def test_health(client: TestClient) -> None:
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "model_source": "file", "model_version": None}
 
 
 def test_predict_by_zone(client: TestClient) -> None:
