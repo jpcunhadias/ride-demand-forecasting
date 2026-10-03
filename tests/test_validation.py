@@ -1,11 +1,18 @@
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from ride_demand_forecasting import validation
 from ride_demand_forecasting.train import load_months
-from ride_demand_forecasting.validation import backtest, summarize_backtest, validate_k
+from ride_demand_forecasting.validation import (
+    backtest,
+    sample_lgbm_params,
+    summarize_backtest,
+    tune,
+    validate_k,
+)
 
 
 @pytest.fixture(scope="module")
@@ -140,3 +147,80 @@ def test_validate_k_uses_the_same_calendar_window_as_training(
     # A two-month window ending in August is July and August. May is on disk but
     # outside it, and must not stand in for the missing July.
     assert loaded_months == ["2026-08"]
+
+
+def small_lgbm_params(rng: np.random.Generator) -> dict:
+    """A stand-in for the real search space with small, quick-to-fit models."""
+    return {
+        "n_estimators": int(rng.integers(10, 40)),
+        "num_leaves": 15,
+        "learning_rate": 0.1,
+        "subsample": 0.8,
+        "subsample_freq": 1,
+        "colsample_bytree": 0.8,
+    }
+
+
+def quick_tune(data_dir: Path, n_trials: int) -> pd.DataFrame:
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(validation, "sample_lgbm_params", small_lgbm_params)
+        return tune(
+            data_dir=data_dir, n_trials=n_trials, n_test_months=2, window_months=2, n_zones=5
+        )
+
+
+@pytest.fixture(scope="module")
+def tuning_results(tlc_data_dir: Path) -> pd.DataFrame:
+    return quick_tune(tlc_data_dir, n_trials=3)
+
+
+def test_tune_scores_the_current_configuration_and_every_trial(
+    tuning_results: pd.DataFrame,
+) -> None:
+    assert sorted(tuning_results["trial"]) == ["current", "trial-1", "trial-2", "trial-3"]
+    assert tuning_results["wape"].is_monotonic_increasing
+    assert (tuning_results["folds"] == 2).all()
+    sampled = tuning_results[tuning_results["trial"] != "current"]
+    assert all(params["subsample_freq"] == 1 for params in sampled["params"])
+
+
+def test_tune_scores_the_current_configuration_like_the_backtest(
+    tlc_data_dir: Path, tuning_results: pd.DataFrame
+) -> None:
+    # Same folds, same zones, same hyperparameters: the two commands must agree.
+    backtested = summarize_backtest(
+        backtest(data_dir=tlc_data_dir, windows=(2,), zone_counts=(5,), n_test_months=2)
+    ).iloc[0]
+    current = tuning_results[tuning_results["trial"] == "current"].iloc[0]
+
+    assert current["wape"] == pytest.approx(backtested["wape"])
+    assert current["mae"] == pytest.approx(backtested["mae"])
+
+
+def test_tune_is_repeatable(tlc_data_dir: Path, tuning_results: pd.DataFrame) -> None:
+    again = quick_tune(tlc_data_dir, n_trials=1)
+
+    # The same seed draws the same first configuration and scores it the same.
+    first = tuning_results[tuning_results["trial"] == "trial-1"].iloc[0]
+    repeated = again[again["trial"] == "trial-1"].iloc[0]
+    assert repeated["params"] == first["params"]
+    assert repeated["wape"] == pytest.approx(first["wape"])
+
+
+def test_tune_fails_clearly_without_enough_history(tmp_path: Path, make_tlc_data_dir) -> None:
+    data_dir = make_tlc_data_dir(tmp_path / "tlc", ["2026-08"])
+
+    with pytest.raises(ValueError, match="nothing can be tuned"):
+        tune(data_dir=data_dir, n_trials=1, n_zones=5)
+
+
+def test_sample_lgbm_params_stays_inside_the_search_space() -> None:
+    rng = np.random.default_rng(0)
+
+    for _ in range(200):
+        params = sample_lgbm_params(rng)
+        assert 100 <= params["n_estimators"] <= 600
+        assert 15 <= params["num_leaves"] <= 255
+        assert 0.01 <= params["learning_rate"] <= 0.2
+        assert 0.6 <= params["subsample"] <= 1.0
+        assert 0.6 <= params["colsample_bytree"] <= 1.0

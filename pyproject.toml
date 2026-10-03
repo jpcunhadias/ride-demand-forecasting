@@ -45,6 +45,7 @@ ride-demand-train = "ride_demand_forecasting.train:main"
 ride-demand-ingest = "ride_demand_forecasting.ingest:main"
 ride-demand-backtest = "ride_demand_forecasting.validation:backtest_main"
 ride-demand-validate-k = "ride_demand_forecasting.validation:validate_k_main"
+ride-demand-tune = "ride_demand_forecasting.validation:tune_main"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]

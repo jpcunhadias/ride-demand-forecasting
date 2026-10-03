@@ -89,3 +89,36 @@ def log_backtest(summary: pd.DataFrame, gap_months: int) -> list[str]:
         run_ids.append(run.info.run_id)
     logger.info("Logged %d backtest run(s) to MLflow", len(run_ids))
     return run_ids
+
+
+def log_tuning(results: pd.DataFrame) -> str | None:
+    """Log the best trial of a hyperparameter search, next to the score of the current
+    configuration; returns the run id, or None if tracking is off."""
+    if not os.environ.get("MLFLOW_TRACKING_URI"):
+        logger.info("MLFLOW_TRACKING_URI is not set - skipping experiment tracking")
+        return None
+
+    import mlflow
+
+    best = results.iloc[0]
+    current = results[results["trial"] == "current"].iloc[0]
+    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+    with mlflow.start_run(run_name="tune") as run:
+        mlflow.log_params(
+            {
+                "best_trial": best["trial"],
+                "n_trials": len(results) - 1,
+                "folds": int(best["folds"]),
+                **{f"lgbm_{name}": value for name, value in best["params"].items()},
+            }
+        )
+        mlflow.log_metrics(
+            {
+                "wape": best["wape"],
+                "mae": best["mae"],
+                "rmse": best["rmse"],
+                "current_wape": current["wape"],
+            }
+        )
+    logger.info("Logged tuning run %s to MLflow", run.info.run_id)
+    return run.info.run_id
