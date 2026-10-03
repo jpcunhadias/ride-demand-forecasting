@@ -1,40 +1,14 @@
-"""Feature engineering and zone-hour aggregation."""
+"""Zone-hour aggregation and the features built from it.
+
+The first three functions work on trip-level frames and are what the exploratory
+notebook imports; the training pipeline uses the location-level ones below them,
+which work on trips already reduced per month.
+"""
 
 from itertools import product
 
 import numpy as np
 import pandas as pd
-
-EARTH_RADIUS_KM = 6371.0088
-
-
-def add_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df["start_time"] = pd.to_datetime(df["start_time"])
-    df["hour"] = df["start_time"].dt.hour
-    return df
-
-
-def haversine_distance_km(
-    lat1: pd.Series | np.ndarray,
-    lng1: pd.Series | np.ndarray,
-    lat2: pd.Series | np.ndarray,
-    lng2: pd.Series | np.ndarray,
-) -> np.ndarray:
-    """Vectorized great-circle distance between two sets of coordinates, in km."""
-    lat1_r, lng1_r, lat2_r, lng2_r = map(np.radians, (lat1, lng1, lat2, lng2))
-    dlat = lat2_r - lat1_r
-    dlng = lng2_r - lng1_r
-    a = np.sin(dlat / 2) ** 2 + np.cos(lat1_r) * np.cos(lat2_r) * np.sin(dlng / 2) ** 2
-    return 2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(a))
-
-
-def add_ride_distance(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df["ride_distance_km"] = haversine_distance_km(
-        df["start_lat"], df["start_lng"], df["end_lat"], df["end_lng"]
-    )
-    return df
 
 
 def aggregate_zone_hour(

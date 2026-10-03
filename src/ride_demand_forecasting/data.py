@@ -1,14 +1,10 @@
-"""Loading and geo-cleaning raw trip data."""
+"""Loading, cleaning and validating raw trip data."""
 
 from pathlib import Path
 
 import pandas as pd
 
 from ride_demand_forecasting.config import (
-    NYC_LAT_MAX,
-    NYC_LAT_MIN,
-    NYC_LNG_MAX,
-    NYC_LNG_MIN,
     TLC_MAX_DISTANCE_MILES,
     TLC_MAX_DURATION_MIN,
     TLC_MAX_SPEED_MPH,
@@ -16,14 +12,6 @@ from ride_demand_forecasting.config import (
     TLC_MIN_DISTANCE_MILES,
     TLC_MIN_DURATION_MIN,
 )
-
-RENAME_MAP = {
-    "pickup_datetime": "start_time",
-    "pickup_latitude": "start_lat",
-    "pickup_longitude": "start_lng",
-    "dropoff_latitude": "end_lat",
-    "dropoff_longitude": "end_lng",
-}
 
 TLC_RENAME_MAP = {
     "tpep_pickup_datetime": "start_time",
@@ -36,18 +24,10 @@ TLC_RENAME_MAP = {
 KM_PER_MILE = 1.609344
 
 
-def load_raw_trips(path: str | Path) -> pd.DataFrame:
-    """Load the raw Kaggle-schema trips CSV into the notebook's normalized schema."""
-    df = pd.read_csv(path, parse_dates=["pickup_datetime"])
-    df = df.rename(columns=RENAME_MAP)
-    df["ride_duration_min"] = df["trip_duration"] / 60
-    return df
-
-
 def load_tlc_trips(
     path: str | Path, month: pd.Period, zone_centroids: pd.DataFrame
 ) -> pd.DataFrame:
-    """Load one month of TLC yellow taxi trips into the same normalized schema.
+    """Load one month of TLC yellow taxi trips into the pipeline's normalized schema.
 
     Pickup and dropoff zone IDs are replaced by that zone's centre point (see
     `zones.compute_zone_centroids`).
@@ -127,14 +107,3 @@ def validate_daily_coverage(location_daily: pd.DataFrame, month: pd.Period) -> N
     if len(too_low) > 0:
         days = ", ".join(f"{day.date()} ({count})" for day, count in too_low.items())
         raise ValueError(f"{month} has implausibly few trips on: {days}")
-
-
-def filter_geo_outliers(df: pd.DataFrame) -> pd.DataFrame:
-    """Drop rides whose pickup or dropoff falls outside the NYC bounding box."""
-    in_bounds = (
-        df["start_lat"].between(NYC_LAT_MIN, NYC_LAT_MAX)
-        & df["start_lng"].between(NYC_LNG_MIN, NYC_LNG_MAX)
-        & df["end_lat"].between(NYC_LAT_MIN, NYC_LAT_MAX)
-        & df["end_lng"].between(NYC_LNG_MIN, NYC_LNG_MAX)
-    )
-    return df[in_bounds].copy()

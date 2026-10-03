@@ -1,3 +1,5 @@
+import datetime as dt
+
 from pydantic import BaseModel, Field, model_validator
 
 from ride_demand_forecasting.config import NYC_LAT_MAX, NYC_LAT_MIN, NYC_LNG_MAX, NYC_LNG_MIN
@@ -5,6 +7,9 @@ from ride_demand_forecasting.config import NYC_LAT_MAX, NYC_LAT_MIN, NYC_LNG_MAX
 
 class PredictRequest(BaseModel):
     hour: int = Field(ge=0, le=23, description="Hour of day, 0-23")
+    date: dt.date | None = Field(
+        default=None, description="Day to predict for; defaults to today in New York"
+    )
     pickup_zone: int | None = Field(default=None, description="Internal pickup zone id")
     lat: float | None = Field(default=None, description="Pickup latitude")
     lng: float | None = Field(default=None, description="Pickup longitude")
@@ -31,6 +36,7 @@ class PredictRequest(BaseModel):
 class PredictResponse(BaseModel):
     pickup_zone: int
     hour: int
+    date: dt.date
     predicted_avg_daily_ride_count: float
 
 
@@ -41,6 +47,7 @@ class RankingItem(BaseModel):
 
 class RankingsResponse(BaseModel):
     hour: int
+    date: dt.date
     rankings: list[RankingItem]
 
 

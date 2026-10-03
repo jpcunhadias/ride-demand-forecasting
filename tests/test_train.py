@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import pytest
 from ride_demand_forecasting.config import N_PICKUP_ZONES
 from ride_demand_forecasting.inference import PredictionService
 from ride_demand_forecasting.ingest import CENTROIDS_FILENAME
-from ride_demand_forecasting.train import save_artifact, save_metrics, train
+from ride_demand_forecasting.train import save_artifact, save_metrics, train, window_on_disk
 
 
 def test_train_produces_a_complete_artifact(trained_artifact: dict) -> None:
@@ -17,11 +18,13 @@ def test_train_produces_a_complete_artifact(trained_artifact: dict) -> None:
     assert artifact["feature_order"] == [
         "pickup_zone",
         "hour",
+        "day_of_week",
         "avg_ride_duration_min",
         "avg_ride_distance",
     ]
     assert artifact["metrics"]["mae"] >= 0
     assert artifact["metrics"]["rmse"] >= 0
+    assert artifact["metrics"]["wape"] >= 0
     assert artifact["n_train_rows"] > 0
     assert artifact["n_test_rows"] > 0
     assert len(artifact["zone_hour_profile"]) == N_PICKUP_ZONES * 24
@@ -59,6 +62,16 @@ def test_train_honours_the_window_length(tlc_data_dir: Path) -> None:
     assert artifact["eval_train_months"] == ["2026-05", "2026-06"]
 
 
+def test_window_on_disk_never_reaches_past_the_calendar_window() -> None:
+    available = [pd.Period(month, freq="M") for month in ("2026-03", "2026-05", "2026-08")]
+
+    window = window_on_disk(pd.Period("2026-08", freq="M"), 4, available)
+
+    # May to August: March is on disk but outside the window, June and July are missing.
+    assert [str(month) for month in window] == ["2026-05", "2026-08"]
+    assert window_on_disk(pd.Period("2026-01", freq="M"), 2, available) == []
+
+
 def test_train_skips_evaluation_without_enough_history(tmp_path: Path, make_tlc_data_dir) -> None:
     data_dir = make_tlc_data_dir(tmp_path / "tlc", ["2026-08"])
 
@@ -78,10 +91,21 @@ def test_train_fails_clearly_when_nothing_is_ingested(tmp_path: Path) -> None:
 def test_saved_artifact_round_trips_through_prediction_service(model_artifact_path: Path) -> None:
     service = PredictionService(model_path=model_artifact_path)
 
-    prediction = service.predict_zone(pickup_zone=0, hour=12)
+    prediction = service.predict_zone(pickup_zone=0, hour=12, date=dt.date(2026, 9, 14))
 
     assert isinstance(prediction, float)
     assert prediction >= 0
+
+
+def test_predictions_follow_the_day_of_the_week(model_artifact_path: Path) -> None:
+    service = PredictionService(model_path=model_artifact_path)
+    monday, saturday = dt.date(2026, 9, 14), dt.date(2026, 9, 19)
+
+    def total(date: dt.date) -> float:
+        return sum(prediction for _, prediction in service.rank(hour=12, date=date))
+
+    # The synthetic data has twice the trips on weekend days.
+    assert total(saturday) > 1.5 * total(monday)
 
 
 def test_age_days_is_near_zero_right_after_training(tmp_path: Path, trained_artifact: dict) -> None:
@@ -115,6 +139,7 @@ def test_save_metrics_writes_evaluation_metrics_and_row_counts(
     assert metrics == {
         "mae": trained_artifact["metrics"]["mae"],
         "rmse": trained_artifact["metrics"]["rmse"],
+        "wape": trained_artifact["metrics"]["wape"],
         "n_train_rows": trained_artifact["n_train_rows"],
         "n_test_rows": trained_artifact["n_test_rows"],
     }

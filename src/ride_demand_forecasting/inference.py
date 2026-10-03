@@ -1,5 +1,6 @@
 """Loads a trained artifact once and serves predictions from it."""
 
+import datetime as dt
 from pathlib import Path
 
 import joblib
@@ -46,7 +47,7 @@ class PredictionService:
     def _profile_for(self, pickup_zone: int, hour: int) -> tuple[float, float]:
         return self._profile.get((pickup_zone, hour), (0.0, 0.0))
 
-    def _predict_batch(self, pickup_zones: list[int], hour: int) -> np.ndarray:
+    def _predict_batch(self, pickup_zones: list[int], hour: int, date: dt.date) -> np.ndarray:
         avg_duration, avg_distance = zip(
             *(self._profile_for(zone, hour) for zone in pickup_zones), strict=True
         )
@@ -54,6 +55,7 @@ class PredictionService:
             {
                 "pickup_zone": pickup_zones,
                 "hour": hour,
+                "day_of_week": date.weekday(),
                 "avg_ride_duration_min": avg_duration,
                 "avg_ride_distance": avg_distance,
             }
@@ -61,16 +63,16 @@ class PredictionService:
         features[["pickup_zone"]] = self.encoder.transform(features[["pickup_zone"]])
         return self.model.predict(features[self.feature_order])
 
-    def predict_zone(self, pickup_zone: int, hour: int) -> float:
+    def predict_zone(self, pickup_zone: int, hour: int, date: dt.date) -> float:
         if pickup_zone not in self.zones:
             raise UnknownZoneError(f"Unknown pickup_zone: {pickup_zone}")
-        return float(self._predict_batch([pickup_zone], hour)[0])
+        return float(self._predict_batch([pickup_zone], hour, date)[0])
 
-    def predict_coords(self, lat: float, lng: float, hour: int) -> tuple[int, float]:
+    def predict_coords(self, lat: float, lng: float, hour: int, date: dt.date) -> tuple[int, float]:
         zone = self.zone_for_coords(lat, lng)
-        return zone, self.predict_zone(zone, hour)
+        return zone, self.predict_zone(zone, hour, date)
 
-    def rank(self, hour: int, top_n: int | None = None) -> list[tuple[int, float]]:
-        predictions = self._predict_batch(self.zones, hour)
+    def rank(self, hour: int, date: dt.date, top_n: int | None = None) -> list[tuple[int, float]]:
+        predictions = self._predict_batch(self.zones, hour, date)
         ranked = sorted(zip(self.zones, predictions, strict=True), key=lambda p: -p[1])
         return [(zone, float(pred)) for zone, pred in ranked[:top_n]]
