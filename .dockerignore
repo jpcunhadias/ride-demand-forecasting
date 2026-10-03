@@ -9,3 +9,6 @@ cache
 .ruff_cache
 .mypy_cache
 *.ipynb_checkpoints
+.dvc
+.env
+docker
