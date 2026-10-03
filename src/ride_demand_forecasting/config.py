@@ -15,7 +15,8 @@ NYC_LNG_MAX = -73.7002
 
 # Validated via elbow/silhouette analysis on pickup coordinates (see the notebook's
 # "Validating the Number of Pickup Zones" section) - highest silhouette score of the
-# k=10..80 range tested, replacing the original k=40 visual heuristic.
+# k=10..80 range tested, replacing the original k=40 visual heuristic. That was on the
+# 2016 data's raw coordinates; it still needs re-validating on TLC zone centre points.
 N_PICKUP_ZONES = 20
 RANDOM_STATE = 42
 TRAIN_FRACTION = 0.8
@@ -51,6 +52,10 @@ TLC_MAX_DURATION_MIN = 180
 TLC_MIN_DISTANCE_MILES = 0.1
 TLC_MAX_DISTANCE_MILES = 60
 TLC_MAX_SPEED_MPH = 70
+# A day whose total falls below this share of the month's median day is treated as a
+# reporting gap, not as a quiet day. Set well below real demand shocks - the 2016
+# blizzard in the notebook still reached about a fifth of a normal day.
+TLC_MIN_DAILY_SHARE_OF_MEDIAN = 0.05
 
 RAW_DATA_PATH = Path(os.environ.get("RDF_RAW_DATA_PATH", "data/raw/train.csv"))
 MODEL_PATH = Path(os.environ.get("RDF_MODEL_PATH", "models/model.joblib"))

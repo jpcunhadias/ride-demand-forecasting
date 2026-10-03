@@ -12,6 +12,7 @@ from ride_demand_forecasting.config import (
     TLC_MAX_DISTANCE_MILES,
     TLC_MAX_DURATION_MIN,
     TLC_MAX_SPEED_MPH,
+    TLC_MIN_DAILY_SHARE_OF_MEDIAN,
     TLC_MIN_DISTANCE_MILES,
     TLC_MIN_DURATION_MIN,
 )
@@ -104,6 +105,28 @@ def load_tlc_trips(
         how="left",
     )
     return df.drop(columns="end_time").sort_values("start_time").reset_index(drop=True)
+
+
+def validate_daily_coverage(location_daily: pd.DataFrame, month: pd.Period) -> None:
+    """Fail if `month` has a day with no trips, or with implausibly few.
+
+    Zone-hour-days without trips are later filled in as zero demand, which is only true
+    if the day was actually reported. A gap in the source would otherwise be learned
+    as a day when nobody took a taxi.
+    """
+    daily_totals = location_daily.groupby("date")["ride_count"].sum()
+    expected_days = pd.date_range(month.start_time, month.end_time.normalize(), freq="D")
+
+    missing = expected_days.difference(daily_totals.index)
+    if len(missing) > 0:
+        days = ", ".join(str(day.date()) for day in missing)
+        raise ValueError(f"{month} has no trips on: {days}")
+
+    floor = TLC_MIN_DAILY_SHARE_OF_MEDIAN * daily_totals.median()
+    too_low = daily_totals[daily_totals < floor]
+    if len(too_low) > 0:
+        days = ", ".join(f"{day.date()} ({count})" for day, count in too_low.items())
+        raise ValueError(f"{month} has implausibly few trips on: {days}")
 
 
 def filter_geo_outliers(df: pd.DataFrame) -> pd.DataFrame:
