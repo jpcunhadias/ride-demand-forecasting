@@ -22,6 +22,7 @@ def test_train_produces_a_complete_artifact(trained_artifact: dict) -> None:
     ]
     assert artifact["metrics"]["mae"] >= 0
     assert artifact["metrics"]["rmse"] >= 0
+    assert artifact["metrics"]["wape"] >= 0
     assert artifact["n_train_rows"] > 0
     assert artifact["n_test_rows"] > 0
     assert len(artifact["zone_hour_profile"]) == N_PICKUP_ZONES * 24
@@ -115,6 +116,7 @@ def test_save_metrics_writes_evaluation_metrics_and_row_counts(
     assert metrics == {
         "mae": trained_artifact["metrics"]["mae"],
         "rmse": trained_artifact["metrics"]["rmse"],
+        "wape": trained_artifact["metrics"]["wape"],
         "n_train_rows": trained_artifact["n_train_rows"],
         "n_test_rows": trained_artifact["n_test_rows"],
     }

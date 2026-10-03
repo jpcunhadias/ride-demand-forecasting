@@ -8,6 +8,8 @@ import logging
 import os
 from pathlib import Path
 
+import pandas as pd
+
 from ride_demand_forecasting.config import LGBM_PARAMS, MLFLOW_EXPERIMENT
 
 logger = logging.getLogger(__name__)
@@ -52,3 +54,29 @@ def log_training_run(artifact: dict, model_path: str | Path) -> str | None:
         mlflow.log_artifact(str(model_path))
     logger.info("Logged run %s to MLflow experiment %r", run.info.run_id, MLFLOW_EXPERIMENT)
     return run.info.run_id
+
+
+def log_backtest(summary: pd.DataFrame, gap_months: int) -> list[str]:
+    """Log one run per training-window length from a backtest summary; returns the run
+    ids (empty if tracking is off)."""
+    if not os.environ.get("MLFLOW_TRACKING_URI"):
+        logger.info("MLFLOW_TRACKING_URI is not set - skipping experiment tracking")
+        return []
+
+    import mlflow
+
+    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+    run_ids = []
+    for row in summary.itertuples():
+        with mlflow.start_run(run_name=f"backtest-window-{row.window_months}") as run:
+            mlflow.log_params(
+                {
+                    "window_months": row.window_months,
+                    "gap_months": gap_months,
+                    "test_months": row.test_months,
+                }
+            )
+            mlflow.log_metrics({"mae": row.mae, "rmse": row.rmse, "wape": row.wape})
+        run_ids.append(run.info.run_id)
+    logger.info("Logged %d backtest run(s) to MLflow", len(run_ids))
+    return run_ids

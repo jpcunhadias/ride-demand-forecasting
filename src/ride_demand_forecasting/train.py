@@ -69,6 +69,30 @@ def load_month(month: pd.Period, data_dir: Path, zone_centroids: pd.DataFrame) -
     return location_daily
 
 
+def load_months(
+    months: list[pd.Period],
+    data_dir: Path,
+    zone_centroids: pd.DataFrame,
+    loaded: dict[pd.Period, pd.DataFrame],
+) -> pd.DataFrame:
+    """Stack the given months, reading each from disk at most once across calls that
+    share the same `loaded` cache."""
+    for month in months:
+        if month not in loaded:
+            loaded[month] = load_month(month, data_dir, zone_centroids)
+    return pd.concat([loaded[month] for month in months], ignore_index=True)
+
+
+def pickup_points(
+    location_daily: pd.DataFrame, zone_centroids: pd.DataFrame
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """The centre point of every zone that had pickups, and how many it had."""
+    points = zone_centroids.rename(columns={"lat": "start_lat", "lng": "start_lng"})
+    pickups = location_daily.groupby("pickup_location_id")["ride_count"].sum()
+    seen = points[points["location_id"].isin(pickups.index)]
+    return seen, pickups.loc[seen["location_id"]].to_numpy()
+
+
 def _features_and_target(
     location_daily: pd.DataFrame, fitted: dict
 ) -> tuple[pd.DataFrame, pd.Series]:
@@ -82,14 +106,11 @@ def _features_and_target(
 
 def fit(location_daily: pd.DataFrame, zone_centroids: pd.DataFrame, n_zones: int) -> dict:
     """Fit pickup zones, the zone-hour profile and the model on one training window."""
-    points = zone_centroids.rename(columns={"lat": "start_lat", "lng": "start_lng"})
-    pickups = location_daily.groupby("pickup_location_id")["ride_count"].sum()
     # Zones with no pickups in the window don't shape the clusters, but still get
     # assigned to one so any location can be mapped at serving time.
-    seen = points[points["location_id"].isin(pickups.index)]
-    kmeans = fit_pickup_zones(
-        seen, n_zones=n_zones, sample_weight=pickups.loc[seen["location_id"]].to_numpy()
-    )
+    seen, weights = pickup_points(location_daily, zone_centroids)
+    kmeans = fit_pickup_zones(seen, n_zones=n_zones, sample_weight=weights)
+    points = zone_centroids.rename(columns={"lat": "start_lat", "lng": "start_lng"})
     zones = np.arange(n_zones)
     fitted = {
         "kmeans": kmeans,
@@ -115,6 +136,9 @@ def evaluate(fitted: dict, location_daily: pd.DataFrame) -> dict:
     return {
         "mae": float(mean_absolute_error(y_test, y_pred)),
         "rmse": float(np.sqrt(mean_squared_error(y_test, y_pred))),
+        # Total absolute error as a share of total rides. Unlike MAE it doesn't depend
+        # on how busy a zone-hour typically is, so it compares across zone layouts.
+        "wape": float(np.abs(y_test - y_pred).sum() / y_test.sum()),
         "n_test_rows": len(X_test),
     }
 
@@ -149,12 +173,9 @@ def train(
             # A missing month is trained around, never filled in.
             missing = ", ".join(str(month) for month in wanted if month not in available)
             logger.warning("Window ending %s is missing: %s", last_month, missing)
-        for month in present:
-            if month not in loaded:
-                loaded[month] = load_month(month, data_dir, zone_centroids)
         if not present:
             return None, []
-        return pd.concat([loaded[month] for month in present], ignore_index=True), present
+        return load_months(present, data_dir, zone_centroids, loaded), present
 
     train_data, train_months = load_window(end_month)
     assert train_data is not None  # `end_month` itself is always present
@@ -238,6 +259,7 @@ def main() -> None:
         )
         logger.info("Test MAE: %.3f rides/day", artifact["metrics"]["mae"])
         logger.info("Test RMSE: %.3f rides/day", artifact["metrics"]["rmse"])
+        logger.info("Test WAPE: %.1f%% of rides", 100 * artifact["metrics"]["wape"])
     log_training_run(artifact, MODEL_PATH)
 
 

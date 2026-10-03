@@ -63,6 +63,13 @@ TLC_TRAIN_WINDOW_MONTHS = 12
 # between the last training month and the test month.
 TLC_EVAL_GAP_MONTHS = 2
 
+# What `ride-demand-backtest` compares by default: these training-window lengths, each
+# scored on the same most recent test months.
+TLC_BACKTEST_WINDOWS = (3, 6, 12, 24)
+TLC_BACKTEST_TEST_MONTHS = 6
+# The pickup-zone counts `ride-demand-validate-k` tries by default.
+PICKUP_ZONE_CANDIDATES = tuple(range(5, 65, 5))
+
 MODEL_PATH = Path(os.environ.get("RDF_MODEL_PATH", "models/model.joblib"))
 # Evaluation metrics of the latest training run, as a small JSON file DVC can compare
 # across runs (`dvc metrics diff`).
