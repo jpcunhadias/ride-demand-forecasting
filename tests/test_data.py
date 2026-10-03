@@ -28,22 +28,43 @@ def test_filter_geo_outliers_drops_out_of_bounds_rows(raw_trips_csv: Path) -> No
     assert len(cleaned) == n_before - 5
 
 
-def test_load_tlc_trips_joins_centre_points_and_drops_unusable_rows(
-    tmp_path: Path, tlc_trips: pd.DataFrame, taxi_zones_zip: Path
-) -> None:
+@pytest.fixture
+def loaded_tlc_trips(tmp_path: Path, tlc_trips: pd.DataFrame, taxi_zones_zip: Path) -> pd.DataFrame:
     path = tmp_path / "yellow_tripdata_2026-08.parquet"
     tlc_trips.to_parquet(path)
-    centroids = compute_zone_centroids(taxi_zones_zip)
+    return load_tlc_trips(path, pd.Period("2026-08"), compute_zone_centroids(taxi_zones_zip))
 
-    df = load_tlc_trips(path, pd.Period("2026-08"), centroids)
 
-    # The stray-month, negative-duration and unmapped-pickup rows are gone; the trip
-    # with an unmapped dropoff is kept.
-    assert df["pickup_location_id"].tolist() == [1, 2, 3, 2]
-    assert df["ride_duration_min"].tolist() == [10, 20, 30, 15]
-    assert df["ride_distance_km"].tolist() == pytest.approx(
-        [m * KM_PER_MILE for m in (1.0, 2.0, 3.0, 5.0)]
+def test_load_tlc_trips_drops_only_rows_that_are_not_countable_pickups(
+    loaded_tlc_trips: pd.DataFrame,
+) -> None:
+    df = loaded_tlc_trips
+
+    assert df["start_time"].dt.day.tolist() == [1, 2, 3, 6, 7, 8, 9, 10, 11]
+    assert (df["fare_amount"] >= 0).all()
+    assert df["pickup_location_id"].isin([1, 2, 3]).all()
+
+
+def test_load_tlc_trips_blanks_implausible_measurements_but_keeps_the_trip(
+    loaded_tlc_trips: pd.DataFrame,
+) -> None:
+    df = loaded_tlc_trips
+    nan = float("nan")
+
+    # In day order: three clean trips, unmapped dropoff, no dropoff time, no distance,
+    # day-long clock error, impossible distance, impossible speed.
+    assert df["ride_duration_min"].tolist() == pytest.approx(
+        [10, 20, 30, 15, nan, 15, nan, 20, nan], nan_ok=True
     )
+    assert (df["ride_distance_km"] / KM_PER_MILE).tolist() == pytest.approx(
+        [1.0, 2.0, 3.0, 5.0, 2.5, nan, 3.0, nan, nan], nan_ok=True
+    )
+
+
+def test_load_tlc_trips_joins_zone_centre_points(loaded_tlc_trips: pd.DataFrame) -> None:
+    df = loaded_tlc_trips
+
     assert df.loc[0, ["start_lat", "start_lng"]].tolist() == pytest.approx([1.0, 1.0])
     assert df.loc[2, ["start_lat", "start_lng"]].tolist() == pytest.approx([21.0, 23.0])
-    assert df["end_lat"].isna().tolist() == [False, False, False, True]
+    # Only the trip dropped off in a zone with no centre point lacks end coordinates.
+    assert df.loc[df["end_lat"].isna(), "dropoff_location_id"].tolist() == [265]
