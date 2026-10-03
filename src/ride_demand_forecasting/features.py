@@ -53,7 +53,9 @@ def aggregate_zone_hour(
     agg_df = (
         df.groupby([zone_col, time_col])
         .agg(
-            ride_count=("ride_duration_min", "count"),
+            # Rows, not non-missing durations: a trip with no usable duration still
+            # happened.
+            ride_count=("ride_duration_min", "size"),
             avg_ride_duration_min=("ride_duration_min", "mean"),
             avg_ride_distance=("ride_distance_km", "mean"),
         )
