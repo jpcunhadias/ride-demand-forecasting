@@ -110,6 +110,17 @@ run end-to-end against the real dataset (not copy-pasted conclusions):
   (naive rolling-mean, Holt-Winters ETS) — recency features turn out to
   be the single biggest lever tested (~20% MAE improvement), a concrete,
   quantified case for a future stateful redesign of the service.
+- **Weather & holiday features** — a second notebook-only extension,
+  motivated by the Winter Storm Jonas crash above. Adding daily weather
+  (Open-Meteo) plus a US federal holiday flag makes the model *worse*
+  under the chronological split (MAE 4.626 → 5.189), and the notebook
+  diagnoses why: the test window (late May–June) has zero snow days, so
+  the split can't reward learning a snow effect. A random-day split used
+  purely as a diagnostic still shows a smaller negative effect, and the
+  hyperparameters weren't re-tuned for the larger feature set, so weather
+  is left undecided rather than rejected. The holiday flag alone gives a
+  small improvement (MAE 4.626 → 4.580) that isn't confounded the same
+  way, though it rests on a single holiday in the test window.
 - **Deployment & driver guidance strategy** — how this would run in
   production (Airflow, Docker, FastAPI, a model registry, Grafana
   monitoring), and how drivers would see it in the app.
@@ -243,6 +254,20 @@ To retrain against your own copy of `data/raw/train.csv`:
 uv run ride-demand-train   # writes models/model.joblib
 ```
 
+Configuration is via environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RDF_MODEL_PATH` | `models/model.joblib` | Artifact the API loads and the training CLI writes |
+| `RDF_RAW_DATA_PATH` | `data/raw/train.csv` | Training input |
+| `RDF_MODEL_STALENESS_WARNING_DAYS` | `30` | Artifact age above which the API logs a warning at startup |
+
+The staleness check is passive — it logs, and never blocks startup or
+requests. The committed artifact was trained on 2026-09-06 against a
+fixed 2016 dataset, so it will trip the default threshold; that's
+expected here, since there is no newer data to retrain on. Raise the
+variable to silence it.
+
 ## Project structure
 
 ```
@@ -270,6 +295,9 @@ uv run ride-demand-train   # writes models/model.joblib
 |---|---|---|
 | 1 | EDA, zone clustering, baseline XGBoost demand model, deployment strategy, A/B test design | Done |
 | 2 | Productionized service — FastAPI, Docker, tests, CI | Done |
+| 3 | Notebook research extensions — recency features, time-series baselines, weather/holiday | Done |
+| — | Stateful serving for recency features | Deferred — needs a state store the service doesn't have yet |
+| — | Weather at serving time, a `date`/`is_holiday` input, real-time streaming | Not planned — see Limitations |
 
 ## Limitations
 
@@ -283,6 +311,12 @@ uv run ride-demand-train   # writes models/model.joblib
   features the API can currently supply. Realizing that gain needs a
   service redesign that tracks recent per-zone-hour counts — a concrete
   next step, not a vague one, now that it's been measured.
+- **Weather and holidays stay out of the service** — the notebook's
+  weather result is negative but confounded (one blizzard, all of it in
+  the training window), and using weather for real would need a live
+  forecast dependency. The holiday flag's small gain would need a `date`
+  input the API doesn't take, and one holiday in the test window is thin
+  evidence for changing the contract.
 - **Batch retraining only** — no scheduled retraining/CD pipeline yet (the
   notebook's deployment strategy section sketches an Airflow-based one);
   `uv run ride-demand-train` is a manual step for now.

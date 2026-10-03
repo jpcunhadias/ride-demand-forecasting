@@ -1,7 +1,7 @@
 [project]
 name = "ride-demand-forecasting"
 version = "0.1.0"
-description = "Add your description here"
+description = "Spatiotemporal ride-demand forecasting case study with a FastAPI prediction service"
 readme = "README.md"
 authors = [
     { name = "Joao Pedro Dias", email = "joaopedrocdias@hotmail.com" }
