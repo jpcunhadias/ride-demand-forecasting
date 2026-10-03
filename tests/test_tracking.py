@@ -64,10 +64,12 @@ def test_log_backtest_records_one_run_per_window(
     summary = pd.DataFrame(
         {
             "window_months": [3, 12],
+            "n_zones": [20, 20],
             "test_months": [6, 6],
             "mae": [5.0, 4.0],
             "rmse": [8.0, 7.0],
             "wape": [0.30, 0.25],
+            "smallest_zone_share": [0.01, 0.02],
         }
     )
 
@@ -75,8 +77,14 @@ def test_log_backtest_records_one_run_per_window(
 
     assert len(run_ids) == 2
     run = mlflow.get_run(run_ids[1])
-    assert run.info.run_name == "backtest-window-12"
-    assert run.data.params == {"window_months": "12", "gap_months": "2", "test_months": "6"}
+    assert run.info.run_name == "backtest-window-12-zones-20"
+    assert run.data.params == {
+        "window_months": "12",
+        "n_pickup_zones": "20",
+        "gap_months": "2",
+        "test_months": "6",
+    }
+    assert run.data.metrics["smallest_zone_share"] == pytest.approx(0.02)
     assert run.data.metrics["wape"] == pytest.approx(0.25)
 
 

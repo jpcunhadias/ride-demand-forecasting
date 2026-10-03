@@ -10,7 +10,7 @@ from ride_demand_forecasting.validation import backtest, summarize_backtest, val
 def backtest_results(tlc_data_dir: Path) -> pd.DataFrame:
     # Five months on disk (2026-04..08) and a two-month gap: 2026-07 can be tested
     # with windows ending 2026-05, and 2026-08 with windows ending 2026-06.
-    return backtest(data_dir=tlc_data_dir, windows=(1, 2, 3), n_test_months=2, n_zones=5)
+    return backtest(data_dir=tlc_data_dir, windows=(1, 2, 3), zone_counts=(5,), n_test_months=2)
 
 
 def test_backtest_runs_every_window_that_is_fully_on_disk(backtest_results: pd.DataFrame) -> None:
@@ -52,10 +52,30 @@ def test_summarize_backtest_uses_every_month_when_none_is_shared() -> None:
         }
     )
 
-    summary = summarize_backtest(results).set_index("window_months")
+    summary = summarize_backtest(results.assign(n_zones=5, smallest_zone_share=0.1)).set_index(
+        "window_months"
+    )
 
     assert summary["test_months"].tolist() == [2, 1]
     assert summary["mae"].tolist() == pytest.approx([2.0, 5.0])
+
+
+def test_backtest_compares_zone_counts_on_the_same_windows(tlc_data_dir: Path) -> None:
+    # 30 synthetic taxi zones, so 40 pickup zones can't be formed and is skipped.
+    results = backtest(
+        data_dir=tlc_data_dir, windows=(2,), zone_counts=(3, 10, 40), n_test_months=1
+    )
+
+    assert results["n_zones"].tolist() == [3, 10]
+    assert results["test_month"].unique().tolist() == ["2026-08"]
+    assert results["wape"].between(0, 5).all()
+    # More zones means each holds less of the demand.
+    shares = results.set_index("n_zones")["smallest_zone_share"]
+    assert 0 < shares[10] < shares[3] < 1
+
+    summary = summarize_backtest(results)
+    assert summary[["window_months", "n_zones"]].values.tolist() == [[2, 3], [2, 10]]
+    assert summary["wape"].tolist() == pytest.approx(results["wape"].tolist())
 
 
 def test_validate_k_scores_each_candidate(tlc_data_dir: Path) -> None:

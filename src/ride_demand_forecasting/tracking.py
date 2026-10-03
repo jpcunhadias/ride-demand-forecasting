@@ -57,8 +57,8 @@ def log_training_run(artifact: dict, model_path: str | Path) -> str | None:
 
 
 def log_backtest(summary: pd.DataFrame, gap_months: int) -> list[str]:
-    """Log one run per training-window length from a backtest summary; returns the run
-    ids (empty if tracking is off)."""
+    """Log one run per compared setting (window length and zone count) from a backtest
+    summary; returns the run ids (empty if tracking is off)."""
     if not os.environ.get("MLFLOW_TRACKING_URI"):
         logger.info("MLFLOW_TRACKING_URI is not set - skipping experiment tracking")
         return []
@@ -68,15 +68,24 @@ def log_backtest(summary: pd.DataFrame, gap_months: int) -> list[str]:
     mlflow.set_experiment(MLFLOW_EXPERIMENT)
     run_ids = []
     for row in summary.itertuples():
-        with mlflow.start_run(run_name=f"backtest-window-{row.window_months}") as run:
+        run_name = f"backtest-window-{row.window_months}-zones-{row.n_zones}"
+        with mlflow.start_run(run_name=run_name) as run:
             mlflow.log_params(
                 {
                     "window_months": row.window_months,
+                    "n_pickup_zones": row.n_zones,
                     "gap_months": gap_months,
                     "test_months": row.test_months,
                 }
             )
-            mlflow.log_metrics({"mae": row.mae, "rmse": row.rmse, "wape": row.wape})
+            mlflow.log_metrics(
+                {
+                    "mae": row.mae,
+                    "rmse": row.rmse,
+                    "wape": row.wape,
+                    "smallest_zone_share": row.smallest_zone_share,
+                }
+            )
         run_ids.append(run.info.run_id)
     logger.info("Logged %d backtest run(s) to MLflow", len(run_ids))
     return run_ids

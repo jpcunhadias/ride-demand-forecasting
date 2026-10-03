@@ -35,18 +35,23 @@ LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 def backtest(
     data_dir: str | Path = TLC_DATA_DIR,
     windows: Sequence[int] = TLC_BACKTEST_WINDOWS,
+    zone_counts: Sequence[int] = (N_PICKUP_ZONES,),
     n_test_months: int = TLC_BACKTEST_TEST_MONTHS,
     gap_months: int = TLC_EVAL_GAP_MONTHS,
-    n_zones: int = N_PICKUP_ZONES,
 ) -> pd.DataFrame:
-    """Score each training-window length on each of the most recent test months.
+    """Score each training-window length and pickup-zone count on each of the most
+    recent test months.
 
     For a test month, a window of `w` months ends `gap_months` before it - the same
     distance the publication lag puts between a model and what it predicts. A window
     that isn't fully on disk for a test month is skipped rather than run short, since a
     short window would be scored under the wrong label.
 
-    Returns one row per (window, test month) that could be run.
+    Zone counts are meant to be compared on `wape`: `mae` and `rmse` shrink as zones
+    get smaller whether or not the forecast improves. `smallest_zone_share` is the
+    quietest zone's share of the training window's pickups.
+
+    Returns one row per (window, zone count, test month) that could be run.
     """
     data_dir = Path(data_dir)
     available = available_months(data_dir)
@@ -67,42 +72,78 @@ def backtest(
                     test_month,
                 )
                 continue
-            fitted = fit(
-                load_months(train_months, data_dir, zone_centroids, loaded), zone_centroids, n_zones
-            )
-            metrics = evaluate(fitted, load_months([test_month], data_dir, zone_centroids, loaded))
-            logger.info(
-                "window=%d test=%s MAE=%.3f WAPE=%.1f%%",
-                window,
-                test_month,
-                metrics["mae"],
-                100 * metrics["wape"],
-            )
-            rows.append({"window_months": window, "test_month": str(test_month), **metrics})
+            train_data = load_months(train_months, data_dir, zone_centroids, loaded)
+            test_data = load_months([test_month], data_dir, zone_centroids, loaded)
+            n_pickup_points = len(pickup_points(train_data, zone_centroids)[0])
+            for n_zones in zone_counts:
+                if n_zones >= n_pickup_points:
+                    logger.info(
+                        "Skipping %d zones for %s: only %d taxi zones had pickups",
+                        n_zones,
+                        test_month,
+                        n_pickup_points,
+                    )
+                    continue
+                fitted = fit(train_data, zone_centroids, n_zones)
+                metrics = evaluate(fitted, test_data)
+                zone_rides = train_data.groupby(
+                    train_data["pickup_location_id"].map(fitted["zone_map"])
+                )["ride_count"].sum()
+                smallest_zone_share = float(
+                    zone_rides.reindex(fitted["zones"], fill_value=0).min() / zone_rides.sum()
+                )
+                logger.info(
+                    "window=%d zones=%d test=%s WAPE=%.1f%%",
+                    window,
+                    n_zones,
+                    test_month,
+                    100 * metrics["wape"],
+                )
+                rows.append(
+                    {
+                        "window_months": window,
+                        "n_zones": n_zones,
+                        "test_month": str(test_month),
+                        **metrics,
+                        "smallest_zone_share": smallest_zone_share,
+                    }
+                )
     return pd.DataFrame(
-        rows, columns=["window_months", "test_month", "mae", "rmse", "wape", "n_test_rows"]
+        rows,
+        columns=[
+            "window_months",
+            "n_zones",
+            "test_month",
+            "mae",
+            "rmse",
+            "wape",
+            "smallest_zone_share",
+            "n_test_rows",
+        ],
     )
 
 
 def summarize_backtest(results: pd.DataFrame) -> pd.DataFrame:
-    """Average each window's scores over the test months every window was run on, so
-    the windows are compared on exactly the same months.
+    """Average each setting's scores over the test months every setting was run on, so
+    the settings are compared on exactly the same months.
 
-    If no test month was run for every window, all of each window's months are used
+    If no test month was run for every setting, all of each setting's months are used
     instead and the differing `test_months` counts show the comparison is uneven.
     """
-    n_windows = results["window_months"].nunique()
-    runs_per_month = results.groupby("test_month")["window_months"].nunique()
-    common = runs_per_month[runs_per_month == n_windows].index
+    setting = ["window_months", "n_zones"]
+    n_settings = len(results[setting].drop_duplicates())
+    runs_per_month = results.groupby("test_month").size()
+    common = runs_per_month[runs_per_month == n_settings].index
     if len(common) > 0:
         results = results[results["test_month"].isin(common)]
     return (
-        results.groupby("window_months")
+        results.groupby(setting)
         .agg(
             test_months=("test_month", "nunique"),
             mae=("mae", "mean"),
             rmse=("rmse", "mean"),
             wape=("wape", "mean"),
+            smallest_zone_share=("smallest_zone_share", "mean"),
         )
         .reset_index()
     )
@@ -150,7 +191,7 @@ def validate_k(
 def backtest_main() -> None:
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     parser = argparse.ArgumentParser(
-        description="Compare training-window lengths on the most recent test months."
+        description="Compare training-window lengths and pickup-zone counts on recent test months."
     )
     parser.add_argument(
         "--windows",
@@ -160,6 +201,13 @@ def backtest_main() -> None:
         help="window lengths in months (default: %(default)s)",
     )
     parser.add_argument(
+        "--zones",
+        type=int,
+        nargs="+",
+        default=[N_PICKUP_ZONES],
+        help="numbers of pickup zones to compare, judged on WAPE (default: %(default)s)",
+    )
+    parser.add_argument(
         "--test-months",
         type=int,
         default=TLC_BACKTEST_TEST_MONTHS,
@@ -167,16 +215,16 @@ def backtest_main() -> None:
     )
     args = parser.parse_args()
 
-    results = backtest(windows=args.windows, n_test_months=args.test_months)
+    results = backtest(windows=args.windows, zone_counts=args.zones, n_test_months=args.test_months)
     if results.empty:
         raise SystemExit(
             "Nothing to compare: no test month has a full training window before it on disk. "
             "Ingest more months with `ride-demand-ingest --start YYYY-MM`."
         )
     summary = summarize_backtest(results)
-    print(results.to_string(index=False, float_format="%.3f"))
+    print(results.to_string(index=False, float_format="%.4f"))
     print()
-    print(summary.to_string(index=False, float_format="%.3f"))
+    print(summary.to_string(index=False, float_format="%.4f"))
     log_backtest(summary, TLC_EVAL_GAP_MONTHS)
 
 
