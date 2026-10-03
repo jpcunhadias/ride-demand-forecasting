@@ -109,7 +109,7 @@ def pickup_points(
     return seen, pickups.loc[seen["location_id"]].to_numpy()
 
 
-def _features_and_target(
+def features_and_target(
     location_daily: pd.DataFrame, fitted: dict
 ) -> tuple[pd.DataFrame, pd.Series]:
     daily = zone_hour_daily_counts(location_daily, fitted["zone_map"], fitted["zones"]).merge(
@@ -121,8 +121,9 @@ def _features_and_target(
     return X, daily["ride_count"]
 
 
-def fit(location_daily: pd.DataFrame, zone_centroids: pd.DataFrame, n_zones: int) -> dict:
-    """Fit pickup zones, the zone-hour profile and the model on one training window."""
+def fit_zones(location_daily: pd.DataFrame, zone_centroids: pd.DataFrame, n_zones: int) -> dict:
+    """Fit everything that comes before the model on one training window: the pickup
+    zones and the zone-hour profile."""
     # Zones with no pickups in the window don't shape the clusters, but still get
     # assigned to one so any location can be mapped at serving time.
     seen, weights = pickup_points(location_daily, zone_centroids)
@@ -138,26 +139,35 @@ def fit(location_daily: pd.DataFrame, zone_centroids: pd.DataFrame, n_zones: int
         "encoder": OrdinalEncoder().fit(pd.DataFrame({"pickup_zone": zones})),
     }
     fitted["zone_hour_profile"] = zone_hour_profile(location_daily, fitted["zone_map"], zones)
+    return fitted
 
-    X_train, y_train = _features_and_target(location_daily, fitted)
-    fitted["model"] = LGBMRegressor(**LGBM_PARAMS, random_state=RANDOM_STATE, verbose=-1).fit(
-        X_train, y_train
-    )
+
+def fit_model(X_train: pd.DataFrame, y_train: pd.Series, lgbm_params: dict) -> LGBMRegressor:
+    return LGBMRegressor(**lgbm_params, random_state=RANDOM_STATE, verbose=-1).fit(X_train, y_train)
+
+
+def fit(location_daily: pd.DataFrame, zone_centroids: pd.DataFrame, n_zones: int) -> dict:
+    """Fit pickup zones, the zone-hour profile and the model on one training window."""
+    fitted = fit_zones(location_daily, zone_centroids, n_zones)
+    X_train, y_train = features_and_target(location_daily, fitted)
+    fitted["model"] = fit_model(X_train, y_train, LGBM_PARAMS)
     fitted["n_train_rows"] = len(X_train)
     return fitted
 
 
-def evaluate(fitted: dict, location_daily: pd.DataFrame) -> dict:
-    X_test, y_test = _features_and_target(location_daily, fitted)
-    y_pred = fitted["model"].predict(X_test)
+def score(y_true: pd.Series, y_pred: np.ndarray) -> dict:
     return {
-        "mae": float(mean_absolute_error(y_test, y_pred)),
-        "rmse": float(np.sqrt(mean_squared_error(y_test, y_pred))),
+        "mae": float(mean_absolute_error(y_true, y_pred)),
+        "rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
         # Total absolute error as a share of total rides. Unlike MAE it doesn't depend
         # on how busy a zone-hour typically is, so it compares across zone layouts.
-        "wape": float(np.abs(y_test - y_pred).sum() / y_test.sum()),
-        "n_test_rows": len(X_test),
+        "wape": float(np.abs(y_true - y_pred).sum() / y_true.sum()),
     }
+
+
+def evaluate(fitted: dict, location_daily: pd.DataFrame) -> dict:
+    X_test, y_test = features_and_target(location_daily, fitted)
+    return {**score(y_test, fitted["model"].predict(X_test)), "n_test_rows": len(X_test)}
 
 
 def train(
