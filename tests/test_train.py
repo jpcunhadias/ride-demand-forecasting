@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -6,7 +7,7 @@ import pytest
 from ride_demand_forecasting.config import N_PICKUP_ZONES
 from ride_demand_forecasting.inference import PredictionService
 from ride_demand_forecasting.ingest import CENTROIDS_FILENAME
-from ride_demand_forecasting.train import save_artifact, train
+from ride_demand_forecasting.train import save_artifact, save_metrics, train
 
 
 def test_train_produces_a_complete_artifact(trained_artifact: dict) -> None:
@@ -101,3 +102,19 @@ def test_age_days_reflects_an_older_artifact(tmp_path: Path, trained_artifact: d
     service = PredictionService(model_path=model_path)
 
     assert service.age_days() == pytest.approx(45, abs=0.01)
+
+
+def test_save_metrics_writes_evaluation_metrics_and_row_counts(
+    tmp_path: Path, trained_artifact: dict
+) -> None:
+    metrics_path = tmp_path / "out" / "metrics.json"
+
+    save_metrics(trained_artifact, metrics_path=metrics_path)
+
+    metrics = json.loads(metrics_path.read_text())
+    assert metrics == {
+        "mae": trained_artifact["metrics"]["mae"],
+        "rmse": trained_artifact["metrics"]["rmse"],
+        "n_train_rows": trained_artifact["n_train_rows"],
+        "n_test_rows": trained_artifact["n_test_rows"],
+    }
