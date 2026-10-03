@@ -181,3 +181,14 @@ def mlflow_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv("MLFLOW_TRACKING_URI", uri)
     mlflow.set_tracking_uri(uri)
     return uri
+
+
+@pytest.fixture(autouse=True)
+def reset_mlflow_tracking_uri():
+    """MLflow keeps the tracking URI in a global that outranks the environment
+    variable. Clearing it after every test stops one test's store being silently used
+    by the next."""
+    yield
+    import mlflow
+
+    mlflow.set_tracking_uri(None)

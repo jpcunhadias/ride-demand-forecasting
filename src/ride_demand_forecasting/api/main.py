@@ -2,6 +2,7 @@ import datetime as dt
 import logging
 import os
 import tempfile
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -20,6 +21,7 @@ from ride_demand_forecasting.api.schemas import (
 from ride_demand_forecasting.config import (
     MODEL_PATH,
     MODEL_STALENESS_WARNING_DAYS,
+    REGISTRY_LOAD_TIMEOUT_S,
     SERVICE_TIMEZONE,
 )
 from ride_demand_forecasting.inference import PredictionService, UnknownZoneError
@@ -30,29 +32,54 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _fetch_promoted_model() -> tuple[PredictionService, str] | None:
+    version = registry.champion()
+    if version is None:
+        logger.warning("MLflow is configured but no model has been promoted yet")
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        service = PredictionService(model_path=registry.download_model(version, tmp))
+    # Everything startup goes on to read from the model, checked here so that a model
+    # with bad metadata is rejected in favour of the file rather than failing later.
+    service.age_days()
+    return service, str(version.version)
+
+
 def load_promoted_model() -> tuple[PredictionService, str] | None:
     """The model promoted in the MLflow registry and its version, or None if MLflow
-    isn't configured, has nothing promoted, or can't be reached.
+    isn't configured, has nothing promoted, can't be reached, or takes too long.
 
-    Never raises: a registry problem must not stop the service from starting, since
-    the committed model file is always there to fall back on.
+    Never raises and never waits longer than `REGISTRY_LOAD_TIMEOUT_S`: a registry
+    problem must not stop or stall the service, since the committed model file is
+    always there to fall back on.
     """
     if not registry.tracking_enabled():
         return None
-    # Fail fast rather than hold up startup for minutes if the server is down.
+    # Keep individual requests short. The overall limit below is what bounds startup.
     os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "1")
     os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "10")
-    try:
-        version = registry.champion()
-        if version is None:
-            logger.warning("MLflow is configured but no model has been promoted yet")
-            return None
-        with tempfile.TemporaryDirectory() as tmp:
-            service = PredictionService(model_path=registry.download_model(version, tmp))
-        return service, str(version.version)
-    except Exception:
-        logger.exception("Could not load the promoted model from MLflow")
+
+    outcome: list[tuple[PredictionService, str] | None] = []
+
+    def fetch() -> None:
+        try:
+            outcome.append(_fetch_promoted_model())
+        except Exception:
+            logger.exception("Could not load the promoted model from MLflow")
+            outcome.append(None)
+
+    # A daemon thread, so a lookup that never returns can't keep the process alive.
+    worker = threading.Thread(target=fetch, daemon=True)
+    worker.start()
+    worker.join(REGISTRY_LOAD_TIMEOUT_S)
+    if worker.is_alive():
+        logger.warning(
+            "Loading the promoted model from MLflow took longer than %.0fs - "
+            "serving the model file instead",
+            REGISTRY_LOAD_TIMEOUT_S,
+        )
         return None
+    return outcome[0]
 
 
 @asynccontextmanager

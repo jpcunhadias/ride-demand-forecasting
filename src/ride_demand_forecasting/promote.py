@@ -46,6 +46,8 @@ from ride_demand_forecasting.train import evaluate, fit, load_months, window_on_
 
 logger = logging.getLogger(__name__)
 
+ALREADY_CURRENT = "this model is already the current one"
+
 
 def score_artifact(
     artifact: dict, location_daily: pd.DataFrame, zone_centroids: pd.DataFrame
@@ -77,24 +79,32 @@ def compare(
       evaluations are already like for like;
     - anything else means it has seen the test month, so there is no fair comparison.
     """
-    test_month = candidate["test_month"]
-    last_trained = (champion.get("train_months") or [None])[-1]
-    if champion.get("test_month") == test_month and champion.get("metrics"):
-        return candidate["metrics"]["wape"], champion["metrics"]["wape"], None
-    if last_trained is None:
+    test_month = pd.Period(candidate["test_month"], freq="M")
+    trained_months = champion.get("train_months") or []
+    if not trained_months:
         return None, None, "the current model doesn't record what it was trained on"
-    if last_trained >= test_month:
-        obstacle = f"the current model was already trained on data up to {last_trained}"
-        return None, None, obstacle
+    cutoff = pd.Period(trained_months[-1], freq="M")
+
+    # The stored evaluations are like for like only if both stopped training at the
+    # same month before the same test month.
+    if (
+        champion.get("metrics")
+        and champion.get("test_month") == candidate["test_month"]
+        and (champion.get("eval_train_months") or [None])[-1]
+        == (candidate.get("eval_train_months") or [None])[-1]
+    ):
+        return candidate["metrics"]["wape"], champion["metrics"]["wape"], None
+    if cutoff >= test_month:
+        return None, None, f"the current model was already trained on data up to {cutoff}"
 
     zone_centroids = pd.read_csv(data_dir / CENTROIDS_FILENAME)
     loaded: dict[pd.Period, pd.DataFrame] = {}
-    test_data = load_months([pd.Period(test_month, freq="M")], data_dir, zone_centroids, loaded)
-    months = window_on_disk(
-        pd.Period(last_trained, freq="M"), candidate["window_months"], available_months(data_dir)
-    )
-    if not months:
-        return None, None, f"no data on disk up to {last_trained} to train a matching copy on"
+    months = window_on_disk(cutoff, candidate["window_months"], available_months(data_dir))
+    if not months or months[-1] != cutoff:
+        # A copy that stops earlier than the current model would be compared at a
+        # disadvantage, which is the very thing matching the data is meant to avoid.
+        return None, None, f"the data for {cutoff} is not on disk to train a matching copy on"
+    test_data = load_months([test_month], data_dir, zone_centroids, loaded)
     matched_copy = fit(
         load_months(months, data_dir, zone_centroids, loaded),
         zone_centroids,
@@ -163,6 +173,11 @@ def promote(
             f"{model_path} was not logged to MLflow. Run `ride-demand-train` with "
             "MLFLOW_TRACKING_URI set, then promote."
         )
+    if run.data.tags.get("model_sha256") != registry.file_sha256(model_path):
+        raise RuntimeError(
+            f"{model_path} is not the file its training run logged to MLflow, so its "
+            "scores can't be trusted to describe it. Train again, then promote."
+        )
     version = registry.register_run(run.info.run_id)
     current = registry.champion()
     candidate_wape = candidate["metrics"].get("wape")
@@ -176,12 +191,20 @@ def promote(
 
     if current is not None and current.run_id == run.info.run_id:
         # Nothing to decide, and nothing to record over the decision that promoted it.
-        decision["reason"] = "this model is already the current one"
+        decision["reason"] = ALREADY_CURRENT
         return decision
     if current is not None and candidate_wape is not None:
-        with tempfile.TemporaryDirectory() as tmp:
-            champion = joblib.load(registry.download_model(current, tmp))
-        matched_wape, current_wape, obstacle = compare(candidate, champion, Path(data_dir))
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                champion = joblib.load(registry.download_model(current, tmp))
+        except Exception as error:
+            # Recorded as a rejection rather than raised: an operator can still put the
+            # new version in service by hand with `--version`.
+            logger.exception("Could not load the current model for comparison")
+            matched_wape, current_wape = None, None
+            obstacle: str | None = f"the current model's file could not be loaded ({error})"
+        else:
+            matched_wape, current_wape, obstacle = compare(candidate, champion, Path(data_dir))
         decision.update(candidate_wape=matched_wape, current_wape=current_wape)
         if obstacle is not None:
             decision["reason"] = f"no fair comparison: {obstacle}"
@@ -190,14 +213,28 @@ def promote(
     else:
         decision["promoted"], decision["reason"] = decide(candidate_wape, None, tolerance)
 
+    # The record is written before the alias moves. If the move then fails, the next
+    # run finds this model not yet current, decides again and finishes the job; the
+    # other order could leave a model in service with no record of why.
     client = MlflowClient()
-    if decision["promoted"]:
-        registry.set_champion(version.version)
     client.set_tag(run.info.run_id, "promoted", str(decision["promoted"]).lower())
     client.set_tag(run.info.run_id, "promotion_reason", decision["reason"])
-    if decision["current_wape"] is not None:
-        client.log_metric(run.info.run_id, "current_model_wape", decision["current_wape"])
+    client.set_tag(run.info.run_id, "promotion_decision", json.dumps(decision))
+    for name in ("candidate_wape", "current_wape"):
+        if decision[name] is not None:
+            client.log_metric(run.info.run_id, f"promotion_{name}", decision[name])
+    if decision["promoted"]:
+        registry.set_champion(version.version)
     return decision
+
+
+def record_decision(decision: dict, path: str | Path = PROMOTION_PATH) -> bool:
+    """Write the decision file, unless that would replace the record of a real decision
+    with the no-op of running promotion again. Returns whether it was written."""
+    if decision["reason"] == ALREADY_CURRENT and Path(path).exists():
+        return False
+    save_decision(decision, path)
+    return True
 
 
 def describe_versions() -> pd.DataFrame:
@@ -213,7 +250,8 @@ def describe_versions() -> pd.DataFrame:
         rows.append(
             {
                 "version": int(version.version),
-                "current": "*" if current and current.version == version.version else "",
+                # Backends differ on whether a version number is text or an integer.
+                "current": "*" if current and int(current.version) == int(version.version) else "",
                 "trained_to": run.data.params.get("train_last_month"),
                 "test_month": run.data.params.get("test_month"),
                 "wape": run.data.metrics.get("wape"),
@@ -258,7 +296,7 @@ def main() -> None:
         return
 
     decision = promote()
-    save_decision(decision)
+    record_decision(decision)
     logger.info(
         "%s: %s", "Promoted" if decision["promoted"] else "Not promoted", decision["reason"]
     )

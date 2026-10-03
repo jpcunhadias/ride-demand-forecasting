@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 from ride_demand_forecasting.config import LGBM_PARAMS, MLFLOW_EXPERIMENT
+from ride_demand_forecasting.registry import file_sha256
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +44,6 @@ def log_training_run(artifact: dict, model_path: str | Path) -> str | None:
 
     mlflow.set_experiment(MLFLOW_EXPERIMENT)
     with mlflow.start_run(run_name=f"train-{artifact['train_months'][-1]}") as run:
-        # `trained_at` is what lets the promotion step find this run again from the
-        # model file alone.
-        mlflow.set_tags(
-            {"trained_at": artifact["trained_at"], "model_artifact": Path(model_path).name}
-        )
         mlflow.log_params(run_params(artifact))
         mlflow.log_metrics(
             {
@@ -57,6 +53,16 @@ def log_training_run(artifact: dict, model_path: str | Path) -> str | None:
             }
         )
         mlflow.log_artifact(str(model_path))
+        # Set last, once the file is uploaded: these are what the promotion step finds
+        # the run by, so a run whose upload failed must not carry them. The digest lets
+        # it check that the file it is promoting is the one that was logged.
+        mlflow.set_tags(
+            {
+                "trained_at": artifact["trained_at"],
+                "model_artifact": Path(model_path).name,
+                "model_sha256": file_sha256(model_path),
+            }
+        )
     logger.info("Logged run %s to MLflow experiment %r", run.info.run_id, MLFLOW_EXPERIMENT)
     return run.info.run_id
 

@@ -93,6 +93,9 @@ MLFLOW_MODEL_NAME = os.environ.get("RDF_MLFLOW_MODEL_NAME", "ride-demand-forecas
 # month, with the same data to learn from, is more than this much higher, relatively.
 # A margin rather than "must be better", so that noise alone never blocks an update.
 PROMOTION_TOLERANCE = float(os.environ.get("RDF_PROMOTION_TOLERANCE", "0.05"))
+# How long the API may spend fetching the promoted model at startup before giving up
+# and serving the model file instead.
+REGISTRY_LOAD_TIMEOUT_S = float(os.environ.get("RDF_REGISTRY_LOAD_TIMEOUT_S", "30"))
 # The outcome of the latest promotion decision, for DVC and for people.
 PROMOTION_PATH = Path(os.environ.get("RDF_PROMOTION_PATH", "models/promotion.json"))
 

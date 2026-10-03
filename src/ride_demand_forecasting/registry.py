@@ -8,6 +8,7 @@ MLflow is imported inside each function, so importing this module costs nothing 
 tracking is off.
 """
 
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -18,19 +19,40 @@ from ride_demand_forecasting.config import MLFLOW_EXPERIMENT, MLFLOW_MODEL_NAME
 logger = logging.getLogger(__name__)
 
 CHAMPION_ALIAS = "champion"
+# How MLflow backends report "no such model" or "no such alias". Anything else is a
+# real failure and must not be mistaken for an empty registry.
+NOT_FOUND_ERRORS = {"RESOURCE_DOES_NOT_EXIST", "INVALID_PARAMETER_VALUE"}
 
 
 def tracking_enabled() -> bool:
     return bool(os.environ.get("MLFLOW_TRACKING_URI"))
 
 
+def file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as file:
+        for chunk in iter(lambda: file.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _filter_literal(value: str) -> str:
+    """`value` as a quoted literal for an MLflow filter string. MLflow has no escaping
+    for quotes inside a literal, so a value containing one is refused."""
+    if "'" in value or '"' in value:
+        raise ValueError(f"{value!r} can't be used in an MLflow search: it contains a quote")
+    return f"'{value}'"
+
+
 def find_training_run(trained_at: str) -> Any | None:
-    """The MLflow run that logged the model trained at `trained_at`, if there is one."""
+    """The finished MLflow run that logged the model trained at `trained_at`, if any."""
     import mlflow
 
     runs = mlflow.search_runs(
         experiment_names=[MLFLOW_EXPERIMENT],
-        filter_string=f"tags.trained_at = '{trained_at}'",
+        filter_string=(
+            f"tags.trained_at = {_filter_literal(trained_at)} and attributes.status = 'FINISHED'"
+        ),
         output_format="list",
     )
     return runs[0] if runs else None
@@ -44,9 +66,12 @@ def register_run(run_id: str) -> Any:
     client = MlflowClient()
     try:
         client.create_registered_model(MLFLOW_MODEL_NAME)
-    except MlflowException:
-        pass  # already there
-    existing = client.search_model_versions(f"name = '{MLFLOW_MODEL_NAME}' and run_id = '{run_id}'")
+    except MlflowException as error:
+        if error.error_code != "RESOURCE_ALREADY_EXISTS":
+            raise
+    existing = client.search_model_versions(
+        f"name = {_filter_literal(MLFLOW_MODEL_NAME)} and run_id = {_filter_literal(run_id)}"
+    )
     if existing:
         return existing[0]
     artifact = client.get_run(run_id).data.tags["model_artifact"]
@@ -56,14 +81,20 @@ def register_run(run_id: str) -> Any:
 
 
 def champion() -> Any | None:
-    """The model version currently in service, or None if nothing has been promoted."""
+    """The model version currently in service, or None if nothing has been promoted.
+
+    Raises on any other MLflow error. Returning None for a failed lookup would read as
+    "nothing is in service" and let a new model be promoted with no comparison.
+    """
     from mlflow import MlflowClient
     from mlflow.exceptions import MlflowException
 
     try:
         return MlflowClient().get_model_version_by_alias(MLFLOW_MODEL_NAME, CHAMPION_ALIAS)
-    except MlflowException:
-        return None
+    except MlflowException as error:
+        if error.error_code in NOT_FOUND_ERRORS:
+            return None
+        raise
 
 
 def set_champion(version: str | int) -> None:
@@ -91,5 +122,5 @@ def list_versions() -> list[Any]:
     """Every registered version, newest first."""
     from mlflow import MlflowClient
 
-    versions = MlflowClient().search_model_versions(f"name = '{MLFLOW_MODEL_NAME}'")
+    versions = MlflowClient().search_model_versions(f"name = {_filter_literal(MLFLOW_MODEL_NAME)}")
     return sorted(versions, key=lambda version: int(version.version), reverse=True)
