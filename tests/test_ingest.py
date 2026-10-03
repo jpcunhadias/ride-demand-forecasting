@@ -5,10 +5,12 @@ from email.message import Message
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 import pytest
 
 from ride_demand_forecasting.ingest import (
     CENTROIDS_FILENAME,
+    REQUIRED_TRIP_COLUMNS,
     Download,
     ingest_trips,
     ingest_zone_centroids,
@@ -114,6 +116,47 @@ def test_ingest_trips_rejects_a_file_whose_data_cannot_be_read(
         ingest_trips(month, month, data_dir=tmp_path, download=download)
 
     assert list(tmp_path.iterdir()) == []
+
+
+def test_ingest_trips_rejects_damage_in_a_column_the_pipeline_does_not_use(
+    tmp_path: Path, tlc_trips: pd.DataFrame
+) -> None:
+    month = pd.Period("2026-08")
+    trips = tlc_trips.copy()
+    trips.insert(0, "unused", [f"{i:0400d}" for i in range(len(trips))])
+
+    def download(url: str, dest: Path) -> None:
+        trips.to_parquet(dest, compression=None)
+        # The first column's data starts right after the 4-byte file marker.
+        content = bytearray(dest.read_bytes())
+        content[4:40] = b"\xff" * 36
+        dest.write_bytes(bytes(content))
+        # The columns the pipeline reads are untouched.
+        pq.read_table(dest, columns=sorted(REQUIRED_TRIP_COLUMNS))
+
+    with pytest.raises(ValueError, match="could not be read"):
+        ingest_trips(month, month, data_dir=tmp_path, download=download)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_ingest_zone_centroids_replaces_an_unreadable_boundary_file_on_disk(
+    tmp_path: Path, taxi_zones_zip: Path
+) -> None:
+    data_dir = tmp_path / "tlc"
+    data_dir.mkdir()
+    (data_dir / "taxi_zones.zip").write_bytes(b"left behind by an earlier failed run")
+    requested: list[str] = []
+
+    def download(url: str, dest: Path) -> None:
+        requested.append(url)
+        shutil.copy(taxi_zones_zip, dest)
+
+    lookup = ingest_zone_centroids(data_dir=data_dir, download=download)
+
+    assert len(requested) == 1
+    assert pd.read_csv(lookup)["location_id"].tolist() == [1, 2, 3]
+    assert sorted(p.name for p in data_dir.iterdir()) == [CENTROIDS_FILENAME, "taxi_zones.zip"]
 
 
 def test_ingest_zone_centroids_keeps_nothing_from_a_bad_boundary_file(

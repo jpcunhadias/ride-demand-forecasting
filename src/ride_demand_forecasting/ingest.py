@@ -90,8 +90,9 @@ def validate_trip_file(path: Path) -> None:
     """Fail early if the file can't be read in full, has lost a column the pipeline
     relies on, or has one in an unexpected type.
 
-    The columns are decoded, not just listed: a file's schema lives in its footer and
-    can be intact while the data itself is damaged.
+    Every column is decoded, not just listed: a file's schema lives in its footer and
+    can be intact while the data itself is damaged. That includes columns the pipeline
+    doesn't use, since the file is kept as the record of what was published.
     """
     try:
         parquet = pq.ParquetFile(path)
@@ -105,7 +106,7 @@ def validate_trip_file(path: Path) -> None:
             is_number = pa.types.is_integer(column_type) or pa.types.is_floating(column_type)
             if is_timestamp != column.endswith("_datetime") or not (is_timestamp or is_number):
                 raise ValueError(f"{path.name} has an unexpected type for {column}: {column_type}")
-        for _ in parquet.iter_batches(columns=sorted(REQUIRED_TRIP_COLUMNS)):
+        for _ in parquet.iter_batches():
             pass
     except (OSError, pa.ArrowException) as error:
         raise ValueError(f"{path.name} could not be read: {error}") from error
@@ -157,16 +158,20 @@ def ingest_zone_centroids(
     # only after centre points have been derived from it, and the lookup only once it
     # is fully written. A run that fails part-way leaves nothing for the next to trust.
     zones_zip = data_dir / ZONES_FILENAME
-    downloaded = None
-    if not zones_zip.exists():
+    centroids = None
+    if zones_zip.exists():
+        try:
+            centroids = compute_zone_centroids(zones_zip)
+        except Exception:
+            logger.warning("%s can't be read - downloading it again", zones_zip)
+            zones_zip.unlink()
+    if centroids is None:
         downloaded = _fetch(f"{TLC_BASE_URL}/misc/{ZONES_FILENAME}", zones_zip, download)
-    try:
-        centroids = compute_zone_centroids(downloaded or zones_zip)
-    except BaseException:
-        if downloaded is not None:
+        try:
+            centroids = compute_zone_centroids(downloaded)
+        except BaseException:
             downloaded.unlink(missing_ok=True)
-        raise
-    if downloaded is not None:
+            raise
         os.replace(downloaded, zones_zip)
 
     partial_lookup = centroids_path.with_name(f"partial-{centroids_path.name}")
