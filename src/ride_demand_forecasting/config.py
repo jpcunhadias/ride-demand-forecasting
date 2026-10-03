@@ -33,6 +33,15 @@ LGBM_PARAMS: dict[str, Any] = {
     "colsample_bytree": 0.6624074561769746,
 }
 
+# NYC TLC yellow taxi trip records (one Parquet file per month, published roughly two
+# months in arrears) and the taxi zone boundary file, both served from the TLC's public
+# CDN - see https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page
+TLC_BASE_URL = os.environ.get("RDF_TLC_BASE_URL", "https://d37ci6vzurychx.cloudfront.net")
+TLC_DATA_DIR = Path(os.environ.get("RDF_TLC_DATA_DIR", "data/raw/tlc"))
+# How far back `ride-demand-ingest` looks when no start month is given: a 12-month
+# training window plus the publication lag.
+TLC_DEFAULT_LOOKBACK_MONTHS = 14
+
 RAW_DATA_PATH = Path(os.environ.get("RDF_RAW_DATA_PATH", "data/raw/train.csv"))
 MODEL_PATH = Path(os.environ.get("RDF_MODEL_PATH", "models/model.joblib"))
 
