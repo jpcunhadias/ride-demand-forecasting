@@ -59,6 +59,23 @@ def test_aggregate_zone_hour_fills_missing_combos_and_computes_daily_rate() -> N
     assert zone1_hour6["avg_daily_ride_count"] == 0
 
 
+def test_aggregate_zone_hour_counts_trips_with_missing_measurements() -> None:
+    df = pd.DataFrame(
+        {
+            "pickup_zone": [0, 0, 0],
+            "hour": [8, 8, 8],
+            "ride_duration_min": [10.0, np.nan, 20.0],
+            "ride_distance_km": [2.0, 4.0, np.nan],
+        }
+    )
+
+    row = aggregate_zone_hour(df, n_days=1, zones=[0]).query("hour == 8").iloc[0]
+
+    assert row["ride_count"] == 3
+    assert row["avg_ride_duration_min"] == pytest.approx(15.0)
+    assert row["avg_ride_distance"] == pytest.approx(3.0)
+
+
 def test_aggregate_zone_hour_daily_zero_fills_every_zone_hour_date_combo() -> None:
     df = pd.DataFrame(
         {
