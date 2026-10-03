@@ -1,4 +1,4 @@
-# Local MLOps stack: MinIO (S3-compatible object storage), Postgres, an MLflow tracking
+# Local MLOps stack: SeaweedFS (S3-compatible object storage), Postgres, an MLflow tracking
 # server backed by both, and the prediction API. `docker compose up -d` needs no
 # configuration; copy .env.example to .env to change credentials, ports or images.
 #
@@ -19,39 +19,35 @@ services:
       timeout: 5s
       retries: 10
 
-  minio:
-    # MinIO stopped publishing its own images in October 2025; Chainguard builds this
-    # one from the same source. Only its `latest` tag is free to pull.
-    image: ${MINIO_IMAGE:-cgr.dev/chainguard/minio:latest}
-    command: server /data --console-address ":9001"
+  seaweedfs:
+    # S3-compatible object storage in one container. With no command the image runs
+    # `weed mini -dir=/data`: it takes its credentials from the two AWS variables and
+    # creates the buckets listed in S3_BUCKET on start-up.
+    image: chrislusf/seaweedfs:4.48
     environment:
-      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-rdf-local}
-      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-rdf-local-only}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rdf-local}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rdf-local-only}
+      S3_BUCKET: mlflow,ride-demand-forecasting
     ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "${S3_PORT:-8333}:8333"
+      # Admin UI: users, credentials and buckets.
+      - "${S3_ADMIN_PORT:-23646}:23646"
     volumes:
-      - minio-data:/data
-
-  # Creates the buckets and exits. Written without a shell, which the Chainguard images
-  # don't have; it simply retries until MinIO is accepting connections.
-  minio-init:
-    image: ${MINIO_CLIENT_IMAGE:-cgr.dev/chainguard/minio-client:latest}
-    depends_on:
-      - minio
-    environment:
-      MC_HOST_local: http://${AWS_ACCESS_KEY_ID:-rdf-local}:${AWS_SECRET_ACCESS_KEY:-rdf-local-only}@minio:9000
-    command: mb --ignore-existing local/mlflow local/ride-demand-forecasting
-    restart: on-failure
+      - seaweedfs-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8333"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
   mlflow:
     build: docker/mlflow
     depends_on:
       postgres:
         condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
-    # Artifacts go to MinIO through the tracking server, so clients only ever need its
+      seaweedfs:
+        condition: service_healthy
+    # Artifacts go to object storage through the tracking server, so clients only ever need its
     # URL - no storage credentials.
     command: >
       mlflow server
@@ -61,7 +57,7 @@ services:
       --artifacts-destination s3://mlflow
       --allowed-hosts ${MLFLOW_ALLOWED_HOSTS:-localhost:*,127.0.0.1:*,mlflow:*}
     environment:
-      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      MLFLOW_S3_ENDPOINT_URL: http://seaweedfs:8333
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rdf-local}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rdf-local-only}
     ports:
@@ -85,4 +81,4 @@ services:
 
 volumes:
   postgres-data:
-  minio-data:
+  seaweedfs-data:
