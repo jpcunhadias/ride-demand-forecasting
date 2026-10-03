@@ -77,7 +77,10 @@ def load_tlc_trips(
 
     duration_ok = duration.between(TLC_MIN_DURATION_MIN, TLC_MAX_DURATION_MIN)
     distance_ok = miles.between(TLC_MIN_DISTANCE_MILES, TLC_MAX_DISTANCE_MILES)
-    too_fast = duration_ok & distance_ok & (miles / (duration / 60) > TLC_MAX_SPEED_MPH)
+    # Judged on the raw values, so an impossible speed blanks both measurements even
+    # when one of them is already out of range on its own. Speed is undefined without a
+    # positive duration, which leaves a trip with no dropoff time its distance.
+    too_fast = miles / (duration.where(duration > 0) / 60) > TLC_MAX_SPEED_MPH
     df["ride_duration_min"] = duration.where(duration_ok & ~too_fast)
     df["ride_distance_km"] = (miles * KM_PER_MILE).where(distance_ok & ~too_fast)
 
