@@ -3,6 +3,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from ride_demand_forecasting import validation
+from ride_demand_forecasting.train import load_months
 from ride_demand_forecasting.validation import backtest, summarize_backtest, validate_k
 
 
@@ -41,23 +43,22 @@ def test_summarize_backtest_compares_windows_on_the_same_test_months(
     assert summary["mae"].tolist() == pytest.approx(august["mae"].tolist())
 
 
-def test_summarize_backtest_uses_every_month_when_none_is_shared() -> None:
+def test_summarize_backtest_refuses_to_compare_settings_with_no_shared_month() -> None:
+    # Each window has one test month, but not the same one.
     results = pd.DataFrame(
         {
-            "window_months": [1, 1, 2],
-            "test_month": ["2026-06", "2026-07", "2026-08"],
-            "mae": [1.0, 3.0, 5.0],
-            "rmse": [1.0, 3.0, 5.0],
-            "wape": [0.1, 0.3, 0.5],
+            "window_months": [1, 2],
+            "n_zones": [5, 5],
+            "test_month": ["2026-07", "2026-08"],
+            "mae": [1.0, 5.0],
+            "rmse": [1.0, 5.0],
+            "wape": [0.1, 0.5],
+            "smallest_zone_share": [0.1, 0.1],
         }
     )
 
-    summary = summarize_backtest(results.assign(n_zones=5, smallest_zone_share=0.1)).set_index(
-        "window_months"
-    )
-
-    assert summary["test_months"].tolist() == [2, 1]
-    assert summary["mae"].tolist() == pytest.approx([2.0, 5.0])
+    with pytest.raises(ValueError, match="No test month was run for every setting"):
+        summarize_backtest(results)
 
 
 def test_backtest_compares_zone_counts_on_the_same_windows(tlc_data_dir: Path) -> None:
@@ -87,3 +88,22 @@ def test_validate_k_scores_each_candidate(tlc_data_dir: Path) -> None:
     assert results["silhouette"].between(-1, 1).all()
     assert (results["smallest_zone_share"] > 0).all()
     assert (results["smallest_zone_share"] <= results["largest_zone_share"]).all()
+
+
+def test_validate_k_uses_the_same_calendar_window_as_training(
+    tmp_path: Path, make_tlc_data_dir, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = make_tlc_data_dir(tmp_path / "tlc", ["2026-05", "2026-08"])
+    loaded_months: list[str] = []
+
+    def spy(months, *args, **kwargs):
+        loaded_months.extend(str(month) for month in months)
+        return load_months(months, *args, **kwargs)
+
+    monkeypatch.setattr(validation, "load_months", spy)
+
+    validate_k(data_dir=data_dir, k_values=[3], window_months=2)
+
+    # A two-month window ending in August is July and August. May is on disk but
+    # outside it, and must not stand in for the missing July.
+    assert loaded_months == ["2026-08"]

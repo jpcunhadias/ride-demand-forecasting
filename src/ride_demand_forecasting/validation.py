@@ -25,7 +25,13 @@ from ride_demand_forecasting.config import (
 )
 from ride_demand_forecasting.ingest import CENTROIDS_FILENAME, available_months
 from ride_demand_forecasting.tracking import log_backtest
-from ride_demand_forecasting.train import evaluate, fit, load_months, pickup_points
+from ride_demand_forecasting.train import (
+    evaluate,
+    fit,
+    load_months,
+    pickup_points,
+    window_on_disk,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,17 +133,22 @@ def summarize_backtest(results: pd.DataFrame) -> pd.DataFrame:
     """Average each setting's scores over the test months every setting was run on, so
     the settings are compared on exactly the same months.
 
-    If no test month was run for every setting, all of each setting's months are used
-    instead and the differing `test_months` counts show the comparison is uneven.
+    Raises `ValueError` if no test month was run for every setting. Averaging each
+    setting over its own months would compare different months with each other, and a
+    seasonal difference between them would read as one setting being better.
     """
     setting = ["window_months", "n_zones"]
     n_settings = len(results[setting].drop_duplicates())
     runs_per_month = results.groupby("test_month").size()
     common = runs_per_month[runs_per_month == n_settings].index
-    if len(common) > 0:
-        results = results[results["test_month"].isin(common)]
+    if len(common) == 0:
+        raise ValueError(
+            "No test month was run for every setting, so the settings can't be compared "
+            "fairly. Ingest more months, or compare fewer or shorter windows."
+        )
     return (
-        results.groupby(setting)
+        results[results["test_month"].isin(common)]
+        .groupby(setting)
         .agg(
             test_months=("test_month", "nunique"),
             mae=("mae", "mean"),
@@ -163,7 +174,10 @@ def validate_k(
     data_dir = Path(data_dir)
     available = available_months(data_dir)
     zone_centroids = pd.read_csv(data_dir / CENTROIDS_FILENAME)
-    location_daily = load_months(available[-window_months:], data_dir, zone_centroids, {})
+    # The same calendar window training would use, so the zone count is judged on
+    # exactly the pickups the model's zones are fit on.
+    months = window_on_disk(available[-1], window_months, available)
+    location_daily = load_months(months, data_dir, zone_centroids, {})
     points, weights = pickup_points(location_daily, zone_centroids)
     coords = points[["start_lat", "start_lng"]].to_numpy()
 
@@ -221,9 +235,12 @@ def backtest_main() -> None:
             "Nothing to compare: no test month has a full training window before it on disk. "
             "Ingest more months with `ride-demand-ingest --start YYYY-MM`."
         )
-    summary = summarize_backtest(results)
     print(results.to_string(index=False, float_format="%.4f"))
     print()
+    try:
+        summary = summarize_backtest(results)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     print(summary.to_string(index=False, float_format="%.4f"))
     log_backtest(summary, TLC_EVAL_GAP_MONTHS)
 

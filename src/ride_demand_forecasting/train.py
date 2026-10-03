@@ -85,6 +85,20 @@ def load_months(
     return pd.concat([loaded[month] for month in months], ignore_index=True)
 
 
+def window_on_disk(
+    last_month: pd.Period, n_months: int, available: list[pd.Period]
+) -> list[pd.Period]:
+    """The months of the `n_months` calendar window ending at `last_month` that are on
+    disk. A missing month shortens the window; it is never replaced by an older one."""
+    wanted = pd.period_range(end=last_month, periods=n_months, freq="M")
+    on_disk = set(available)
+    present = [month for month in wanted if month in on_disk]
+    if present and len(present) < len(wanted):
+        missing = ", ".join(str(month) for month in wanted if month not in on_disk)
+        logger.warning("Window ending %s is missing: %s", last_month, missing)
+    return present
+
+
 def pickup_points(
     location_daily: pd.DataFrame, zone_centroids: pd.DataFrame
 ) -> tuple[pd.DataFrame, np.ndarray]:
@@ -170,12 +184,7 @@ def train(
     loaded: dict[pd.Period, pd.DataFrame] = {}
 
     def load_window(last_month: pd.Period) -> tuple[pd.DataFrame | None, list[pd.Period]]:
-        wanted = pd.period_range(end=last_month, periods=window_months, freq="M")
-        present = [month for month in wanted if month in available]
-        if present and len(present) < len(wanted):
-            # A missing month is trained around, never filled in.
-            missing = ", ".join(str(month) for month in wanted if month not in available)
-            logger.warning("Window ending %s is missing: %s", last_month, missing)
+        present = window_on_disk(last_month, window_months, available)
         if not present:
             return None, []
         return load_months(present, data_dir, zone_centroids, loaded), present

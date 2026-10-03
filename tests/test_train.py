@@ -8,7 +8,7 @@ import pytest
 from ride_demand_forecasting.config import N_PICKUP_ZONES
 from ride_demand_forecasting.inference import PredictionService
 from ride_demand_forecasting.ingest import CENTROIDS_FILENAME
-from ride_demand_forecasting.train import save_artifact, save_metrics, train
+from ride_demand_forecasting.train import save_artifact, save_metrics, train, window_on_disk
 
 
 def test_train_produces_a_complete_artifact(trained_artifact: dict) -> None:
@@ -60,6 +60,16 @@ def test_train_honours_the_window_length(tlc_data_dir: Path) -> None:
 
     assert artifact["train_months"] == ["2026-07", "2026-08"]
     assert artifact["eval_train_months"] == ["2026-05", "2026-06"]
+
+
+def test_window_on_disk_never_reaches_past_the_calendar_window() -> None:
+    available = [pd.Period(month, freq="M") for month in ("2026-03", "2026-05", "2026-08")]
+
+    window = window_on_disk(pd.Period("2026-08", freq="M"), 4, available)
+
+    # May to August: March is on disk but outside the window, June and July are missing.
+    assert [str(month) for month in window] == ["2026-05", "2026-08"]
+    assert window_on_disk(pd.Period("2026-01", freq="M"), 2, available) == []
 
 
 def test_train_skips_evaluation_without_enough_history(tmp_path: Path, make_tlc_data_dir) -> None:
