@@ -1,0 +1,31 @@
+# The pipeline as two reproducible stages. `dvc repro` runs whatever is out of date;
+# `dvc push` / `dvc pull` sync the ingested data with the remote in .dvc/config.
+stages:
+  ingest:
+    cmd: ride-demand-ingest
+    # The source is an external site, so there is nothing local to detect a new month
+    # from - always ask. The command itself only downloads what is missing.
+    always_changed: true
+    outs:
+      # Kept between runs: ingestion is incremental, so wiping the directory first
+      # would re-download every month.
+      - data/raw/tlc:
+          persist: true
+
+  train:
+    cmd: ride-demand-train
+    deps:
+      - data/raw/tlc
+      - src/ride_demand_forecasting/clustering.py
+      - src/ride_demand_forecasting/config.py
+      - src/ride_demand_forecasting/data.py
+      - src/ride_demand_forecasting/features.py
+      - src/ride_demand_forecasting/train.py
+    outs:
+      # Tracked by git rather than the DVC cache, so the API still works right after
+      # cloning without a `dvc pull`.
+      - models/model.joblib:
+          cache: false
+    metrics:
+      - models/metrics.json:
+          cache: false
