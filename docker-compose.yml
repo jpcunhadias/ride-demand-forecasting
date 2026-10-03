@@ -80,6 +80,12 @@ services:
 
   api:
     build: .
+    environment:
+      # Serve the model promoted in the registry. The API deliberately doesn't wait
+      # for MLflow: if it is down, slow or has nothing promoted, the API serves the
+      # model file built into its image. It reads the registry at startup only, so
+      # restart it (`docker compose restart api`) after a promotion.
+      MLFLOW_TRACKING_URI: http://mlflow:5000
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8000}:8000"
 

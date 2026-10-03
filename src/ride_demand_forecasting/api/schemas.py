@@ -53,3 +53,6 @@ class RankingsResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
+    # "registry" for the model promoted in MLflow, "file" for the model file fallback.
+    model_source: str
+    model_version: str | None
