@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ride_demand_forecasting.config import (
@@ -75,7 +76,8 @@ def _fetch(url: str, dest: Path, download: Download) -> Path:
     """Download to a temporary sibling of `dest`, so a failed or interrupted download
     never leaves a partial file where a complete one is expected."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    partial = dest.with_name(dest.name + ".part")
+    # Keeps the extension, which is how the shapefile reader recognises a zip.
+    partial = dest.with_name(f"partial-{dest.name}")
     try:
         download(url, partial)
     except BaseException:
@@ -85,11 +87,28 @@ def _fetch(url: str, dest: Path, download: Download) -> Path:
 
 
 def validate_trip_file(path: Path) -> None:
-    """Fail early if the file isn't Parquet or has lost a column the pipeline relies on."""
-    columns = set(pq.read_schema(path).names)
-    missing = REQUIRED_TRIP_COLUMNS - columns
-    if missing:
-        raise ValueError(f"{path.name} is missing expected columns: {sorted(missing)}")
+    """Fail early if the file can't be read in full, has lost a column the pipeline
+    relies on, or has one in an unexpected type.
+
+    The columns are decoded, not just listed: a file's schema lives in its footer and
+    can be intact while the data itself is damaged.
+    """
+    try:
+        parquet = pq.ParquetFile(path)
+        schema = parquet.schema_arrow
+        missing = REQUIRED_TRIP_COLUMNS - set(schema.names)
+        if missing:
+            raise ValueError(f"{path.name} is missing expected columns: {sorted(missing)}")
+        for column in sorted(REQUIRED_TRIP_COLUMNS):
+            column_type = schema.field(column).type
+            is_timestamp = pa.types.is_timestamp(column_type)
+            is_number = pa.types.is_integer(column_type) or pa.types.is_floating(column_type)
+            if is_timestamp != column.endswith("_datetime") or not (is_timestamp or is_number):
+                raise ValueError(f"{path.name} has an unexpected type for {column}: {column_type}")
+        for _ in parquet.iter_batches(columns=sorted(REQUIRED_TRIP_COLUMNS)):
+            pass
+    except (OSError, pa.ArrowException) as error:
+        raise ValueError(f"{path.name} could not be read: {error}") from error
 
 
 def ingest_trips(
@@ -134,12 +153,25 @@ def ingest_zone_centroids(
     if centroids_path.exists():
         return centroids_path
 
+    # Nothing is put at its final path until it is known to be good: a boundary file
+    # only after centre points have been derived from it, and the lookup only once it
+    # is fully written. A run that fails part-way leaves nothing for the next to trust.
     zones_zip = data_dir / ZONES_FILENAME
+    downloaded = None
     if not zones_zip.exists():
-        partial = _fetch(f"{TLC_BASE_URL}/misc/{ZONES_FILENAME}", zones_zip, download)
-        os.replace(partial, zones_zip)
-    centroids = compute_zone_centroids(zones_zip)
-    centroids.to_csv(centroids_path, index=False)
+        downloaded = _fetch(f"{TLC_BASE_URL}/misc/{ZONES_FILENAME}", zones_zip, download)
+    try:
+        centroids = compute_zone_centroids(downloaded or zones_zip)
+    except BaseException:
+        if downloaded is not None:
+            downloaded.unlink(missing_ok=True)
+        raise
+    if downloaded is not None:
+        os.replace(downloaded, zones_zip)
+
+    partial_lookup = centroids_path.with_name(f"partial-{centroids_path.name}")
+    centroids.to_csv(partial_lookup, index=False)
+    os.replace(partial_lookup, centroids_path)
     logger.info("Wrote %d zone centre points to %s", len(centroids), centroids_path)
     return centroids_path
 
