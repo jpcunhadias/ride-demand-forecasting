@@ -38,6 +38,13 @@ logger = logging.getLogger(__name__)
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 
+def _months_on_disk(data_dir: Path) -> list[pd.Period]:
+    available = available_months(data_dir)
+    if not available:
+        raise FileNotFoundError(f"No TLC trip files in {data_dir} - run `ride-demand-ingest`")
+    return available
+
+
 def backtest(
     data_dir: str | Path = TLC_DATA_DIR,
     windows: Sequence[int] = TLC_BACKTEST_WINDOWS,
@@ -60,10 +67,13 @@ def backtest(
     Returns one row per (window, zone count, test month) that could be run.
     """
     data_dir = Path(data_dir)
-    available = available_months(data_dir)
+    available = _months_on_disk(data_dir)
     on_disk = set(available)
     zone_centroids = pd.read_csv(data_dir / CENTROIDS_FILENAME)
     loaded: dict[pd.Period, pd.DataFrame] = {}
+    # A setting named twice is still one setting.
+    windows = list(dict.fromkeys(windows))
+    zone_counts = list(dict.fromkeys(zone_counts))
 
     rows = []
     for test_month in available[-n_test_months:]:
@@ -138,6 +148,8 @@ def summarize_backtest(results: pd.DataFrame) -> pd.DataFrame:
     seasonal difference between them would read as one setting being better.
     """
     setting = ["window_months", "n_zones"]
+    # One row per setting and month, so that counting rows counts settings.
+    results = results.drop_duplicates([*setting, "test_month"])
     n_settings = len(results[setting].drop_duplicates())
     runs_per_month = results.groupby("test_month").size()
     common = runs_per_month[runs_per_month == n_settings].index
@@ -172,7 +184,7 @@ def validate_k(
     gives the model almost nothing to learn from.
     """
     data_dir = Path(data_dir)
-    available = available_months(data_dir)
+    available = _months_on_disk(data_dir)
     zone_centroids = pd.read_csv(data_dir / CENTROIDS_FILENAME)
     # The same calendar window training would use, so the zone count is judged on
     # exactly the pickups the model's zones are fit on.

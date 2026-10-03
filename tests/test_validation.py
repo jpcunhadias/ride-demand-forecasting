@@ -61,6 +61,39 @@ def test_summarize_backtest_refuses_to_compare_settings_with_no_shared_month() -
         summarize_backtest(results)
 
 
+def test_summarize_backtest_is_not_fooled_by_repeated_rows() -> None:
+    # Two rows per month, but each month has only one of the two settings.
+    results = pd.DataFrame(
+        {
+            "window_months": [1, 1, 2, 2],
+            "n_zones": [5, 5, 5, 5],
+            "test_month": ["2026-07", "2026-07", "2026-08", "2026-08"],
+            "mae": 1.0,
+            "rmse": 1.0,
+            "wape": 0.1,
+            "smallest_zone_share": 0.1,
+        }
+    )
+
+    with pytest.raises(ValueError, match="No test month was run for every setting"):
+        summarize_backtest(results)
+
+
+def test_backtest_runs_a_repeated_setting_once(tlc_data_dir: Path) -> None:
+    results = backtest(data_dir=tlc_data_dir, windows=(1, 1), zone_counts=(5, 5), n_test_months=1)
+
+    assert results[["window_months", "n_zones", "test_month"]].values.tolist() == [
+        [1, 5, "2026-08"]
+    ]
+
+
+def test_validation_commands_fail_clearly_when_nothing_is_ingested(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="ride-demand-ingest"):
+        backtest(data_dir=tmp_path)
+    with pytest.raises(FileNotFoundError, match="ride-demand-ingest"):
+        validate_k(data_dir=tmp_path)
+
+
 def test_backtest_compares_zone_counts_on_the_same_windows(tlc_data_dir: Path) -> None:
     # 30 synthetic taxi zones, so 40 pickup zones can't be formed and is skipped.
     results = backtest(
