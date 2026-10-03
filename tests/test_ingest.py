@@ -12,6 +12,7 @@ from ride_demand_forecasting.ingest import (
     CENTROIDS_FILENAME,
     REQUIRED_TRIP_COLUMNS,
     Download,
+    available_months,
     ingest_trips,
     ingest_zone_centroids,
     trip_path,
@@ -196,3 +197,12 @@ def test_ingest_zone_centroids_downloads_and_derives_once(
     assert first == second == data_dir / CENTROIDS_FILENAME
     assert pd.read_csv(first)["location_id"].tolist() == [1, 2, 3]
     assert len(requested) == 1
+
+
+def test_available_months_lists_trip_files_oldest_first(tmp_path: Path) -> None:
+    for name in ("yellow_tripdata_2026-08.parquet", "yellow_tripdata_2025-12.parquet"):
+        (tmp_path / name).touch()
+    (tmp_path / "taxi_zone_centroids.csv").touch()
+
+    assert [str(m) for m in available_months(tmp_path)] == ["2025-12", "2026-08"]
+    assert available_months(tmp_path / "missing") == []
