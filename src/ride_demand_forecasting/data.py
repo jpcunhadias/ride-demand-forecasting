@@ -67,6 +67,10 @@ def load_tlc_trips(
     An unmapped dropoff only leaves `end_lat`/`end_lng` empty.
     """
     df = pd.read_parquet(path, columns=list(TLC_RENAME_MAP)).rename(columns=TLC_RENAME_MAP)
+    # Plain floats, whatever the file stores: with pandas' nullable types a comparison
+    # against a missing value is itself missing, which the rules below would then
+    # treat as a failed check instead of an inapplicable one.
+    df = df.astype({"trip_distance_miles": "float64", "fare_amount": "float64"})
     df = df[df["start_time"].dt.to_period("M") == month]
     df = df[~(df["fare_amount"] < 0)]
 

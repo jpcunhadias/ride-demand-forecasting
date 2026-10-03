@@ -63,6 +63,36 @@ def test_load_tlc_trips_blanks_implausible_measurements_but_keeps_the_trip(
     )
 
 
+def test_load_tlc_trips_handles_nullable_number_columns(
+    tmp_path: Path, tlc_trips: pd.DataFrame, taxi_zones_zip: Path
+) -> None:
+    # The same trips with distance and fare in pandas' nullable type, plus one trip
+    # with neither recorded. Results must not depend on how the file stores numbers.
+    unrecorded = tlc_trips.iloc[[0]].assign(
+        tpep_pickup_datetime=pd.Timestamp("2026-08-14 20:00"),
+        tpep_dropoff_datetime=pd.Timestamp("2026-08-14 20:10"),
+        trip_distance=float("nan"),
+        fare_amount=float("nan"),
+    )
+    trips = pd.concat([tlc_trips, unrecorded]).astype(
+        {"trip_distance": "Float64", "fare_amount": "Float64"}
+    )
+    path = tmp_path / "yellow_tripdata_2026-08.parquet"
+    trips.to_parquet(path)
+    assert str(pd.read_parquet(path)["trip_distance"].dtype) == "Float64"
+
+    df = load_tlc_trips(path, pd.Period("2026-08"), compute_zone_centroids(taxi_zones_zip))
+    by_day = df.set_index(df["start_time"].dt.day)
+
+    # No dropoff time: speed is undefined, so the distance stays.
+    assert by_day.loc[7, "ride_distance_km"] == pytest.approx(2.5 * KM_PER_MILE)
+    assert pd.isna(by_day.loc[7, "ride_duration_min"])
+    # Nothing recorded: still a ride, with a usable duration.
+    assert by_day.loc[14, "ride_duration_min"] == pytest.approx(10)
+    assert pd.isna(by_day.loc[14, "ride_distance_km"])
+    assert df["start_time"].dt.day.tolist() == [1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+
+
 def test_load_tlc_trips_joins_zone_centre_points(loaded_tlc_trips: pd.DataFrame) -> None:
     df = loaded_tlc_trips
 
