@@ -4,10 +4,17 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![uv](https://img.shields.io/badge/managed%20with-uv-de5fe9)
 
-A spatiotemporal ride-demand forecasting case study for a ride-hailing
-platform: EDA, validated zone clustering, a tuned demand model compared
-against alternatives, a deployment strategy, and an A/B test design to
-evaluate it in production.
+A ride-demand forecasting case study for a ride-hailing platform: EDA,
+zone clustering, a per-zone, per-hour demand model served by a FastAPI
+service and compared against naive baselines, a deployment strategy, and
+an A/B test design to evaluate it in production.
+
+The served model takes only a zone and an hour, with no date input, so it
+learns a fixed demand profile per zone and hour: it predicts within 0.03
+rides of the zone × hour training mean. A simple zone × hour × weekday
+average beats it by 21% ([Baselines](#baselines)); adding day of week is
+the next step (draft
+[PR #1](https://github.com/jpcunhadias/ride-demand-forecasting/pull/1)).
 
 This started as a data-science take-home exercise for a ride-hailing
 company, built against ride data they provided for a specific city.
@@ -26,6 +33,7 @@ signal throughout.
 - [Key finding: the naive split silently broke the evaluation](#key-finding-the-naive-split-silently-broke-the-evaluation)
 - [What the notebook covers](#what-the-notebook-covers)
 - [The production service](#the-production-service)
+- [Baselines](#baselines)
 - [Stack](#stack)
 - [Quick start](#quick-start)
 - [Running the service](#running-the-service)
@@ -53,16 +61,20 @@ than it actually was, for a reason that has nothing to do with the model.
 that split) instead of a raw sum — the actual daily rate, which is also
 the quantity that matters for driver guidance in the first place ("how
 many rides typically happen in this zone during this hour"). After the
-fix, train and test means both land around 16 rides/day, and the model
-evaluates to:
+fix, train and test means both land around 16 rides/day, and the notebook
+model evaluates to:
 
 | Metric | Value |
 |---|---:|
 | MAE | 3.24 rides/day |
 | RMSE | 5.09 rides/day |
 
-— about a fifth of the mean and roughly 22% of the median target value,
-a reasonable baseline. The full reasoning is in the notebook's
+**These notebook numbers are leaky and are not the project's result.** The
+cell scores the model with average trip duration and distance taken from
+the test window itself, and with pickup zones fit on train and test rows
+together. The production service removes both leaks; its honest,
+day-level numbers and the baselines they are measured against are in
+[Baselines](#baselines). The full reasoning for the averaging fix is in the notebook's
 ["Note: why `avg_daily_ride_count`, not raw `ride_count`"](notebooks/ride_demand_forecasting.ipynb)
 cell. (The production service, below, sidesteps this split-window issue
 entirely by training on day-level rows instead of one pre-averaged number
@@ -107,9 +119,12 @@ run end-to-end against the real dataset (not copy-pasted conclusions):
   wins narrowly: MAE 4.626 vs. XGBoost's 4.627), then goes further with a
   notebook-only research extension adding recency features (last
   observed count, trailing rolling mean) and two time-series baselines
-  (naive rolling-mean, Holt-Winters ETS) — recency features turn out to
-  be the single biggest lever tested (~20% MAE improvement), a concrete,
-  quantified case for a future stateful redesign of the service.
+  (naive rolling-mean, Holt-Winters ETS). That extension reports ~20% lower
+  MAE (3.688 vs. 4.626), but it adds `day_of_week` together with the lag
+  and rolling features, so the gain is confounded: a plain zone × hour ×
+  weekday average with no lags already reaches MAE 3.597 on the service's
+  test split (see [Baselines](#baselines)). Most of that gain is day of
+  week, which needs a date input, not a stateful service.
 - **Weather & holiday features** — a second notebook-only extension,
   motivated by the Winter Storm Jonas crash above. Adding daily weather
   (Open-Meteo) plus a US federal holiday flag makes the model *worse*
@@ -131,11 +146,13 @@ run end-to-end against the real dataset (not copy-pasted conclusions):
 
 ## The production service
 
-> **In transition.** Training is moving from the fixed 2016 Kaggle file to
-> current NYC TLC yellow taxi data, which is published monthly. This section
-> and its metrics describe the committed model, which was trained on the
-> 2016 data and is what the API serves. `ride-demand-train` already reads
-> the new data — see [Running the service](#running-the-service).
+> **Served model is still the 2016 one.** Ingestion and rolling-window
+> training on current NYC TLC yellow taxi data are merged on `main`, but no
+> model has been trained on TLC data yet. Everything in this section, its
+> metrics, the baselines and the curl outputs describe the committed
+> `models/model.joblib`, trained on the first 145 days of the 2016 Kaggle
+> data. Running `ride-demand-train` replaces that file — see
+> [Running the service](#running-the-service).
 
 [`src/ride_demand_forecasting/`](src/ride_demand_forecasting/) ports the
 notebook's data/feature/model logic into a real package backing a FastAPI
@@ -155,9 +172,12 @@ exploratory record):
   from training data, and the service uses that internally — the API only
   needs `pickup_zone` (or raw `lat`/`lng`, mapped to a zone via the
   persisted KMeans model) and `hour`.
-- **Validated `k=20`, tuned LightGBM**: both come straight from the
-  notebook's "Validating the Number of Pickup Zones" and "Model Validation"
-  sections (see above) — not re-derived separately for the service.
+- **`k=20` zones and LightGBM hyperparameters from the notebook**: `k=20`
+  is where the silhouette score peaked on the 2016 Kaggle data (it has not
+  been re-checked on TLC data), and the hyperparameters come from the
+  notebook's "Model Validation" search. Because the API supplies only zone
+  and hour, the tuned model can only learn a fixed value per zone and hour,
+  so in practice it reproduces the zone × hour training mean.
 - **Day-level training rows**: rather than one pre-averaged number per
   zone-hour for the whole split (a few hundred rows total), training uses
   one row per `(pickup_zone, hour, date)` — tens of thousands of rows,
@@ -181,14 +201,38 @@ With those changes, the production pipeline evaluates to:
 day-level metric, measuring error against actual daily counts rather than
 a pre-averaged rate, so it's a noisier, harder target by construction. It
 is directly comparable to the notebook's own day-level comparison, where
-this same tuned LightGBM configuration scores similarly: MAE 4.626,
-RMSE 6.637 — the small gap is normal run-to-run variance.)
+the same LightGBM configuration scores MAE 4.626, RMSE 6.637. Both runs are
+seeded, so the gap is not run-to-run noise; the two pipelines differ, for
+example the service fits its zones on training rows only.)
 
-A model artifact trained on the full dataset is committed at
+A model artifact trained on the first 145 days of the 2016 data (the
+chronological training split) is committed at
 [`models/model.joblib`](models/model.joblib) (KMeans + `OrdinalEncoder` +
 tuned `LGBMRegressor` + the zone-hour profile lookup), so the API works
 right after cloning — no data download is needed to serve predictions, only
 to retrain.
+
+### Baselines
+
+Measured on the same chronological test split as the served model: the
+last 38 days of the 2016 data, one row per `(pickup_zone, hour, date)`,
+18,240 rows. Each baseline uses only the training days, except seasonal
+naive and persistence, which look back 7 days and 1 day.
+
+| Predictor | MAE | RMSE |
+|---|---:|---:|
+| Served model (LightGBM, zone + hour) | 4.558 | 6.779 |
+| Zone × hour training mean | 4.558 | 6.779 |
+| **Zone × hour × weekday training mean** | **3.597** | **5.252** |
+| Seasonal naive (same zone and hour, 7 days earlier) | 4.736 | 6.898 |
+| Persistence (same zone and hour, 1 day earlier) | 5.324 | 8.004 |
+
+A day-block bootstrap (2,000 resamples of test days) gives a 95% interval
+of 4.25–4.91 for the model's MAE and 4.52–4.99 for seasonal naive, so
+those two overlap. The served model is a learned zone × hour average: it
+stays within 0.03 rides of that mean on every test row. The weekday
+average, with no ML at all, is 21% better, which is the target for adding
+day of week to the model.
 
 **API:**
 
@@ -261,6 +305,10 @@ uv run ride-demand-ingest  # downloads the monthly files not yet in data/raw/tlc
 uv run ride-demand-train   # trains on the latest 12 months, writes models/model.joblib
 ```
 
+> **This overwrites the documented model.** The metrics, baselines and
+> curl outputs in this README all describe the committed 2016 model. To
+> experiment without replacing it, point `RDF_MODEL_PATH` at another file.
+
 Ingestion fetches about 60 MB per month and only what is missing, so it is
 safe to re-run; `--start` and `--end` (as `YYYY-MM`) choose the range. The
 TLC publishes about two months late, so the newest months are reported as
@@ -297,6 +345,8 @@ variable to silence it.
 │   └── ride_demand_forecasting.ipynb
 ├── src/ride_demand_forecasting/
 │   ├── data.py, features.py, clustering.py   # pipeline building blocks
+│   ├── ingest.py                             # downloads monthly TLC trip files
+│   ├── zones.py                              # TLC zone IDs to centre points
 │   ├── train.py                              # training entry point
 │   ├── inference.py                          # loads the artifact, serves predictions
 │   └── api/                                  # FastAPI app
@@ -312,9 +362,10 @@ variable to silence it.
 | 1 | EDA, zone clustering, baseline XGBoost demand model, deployment strategy, A/B test design | Done |
 | 2 | Productionized service — FastAPI, Docker, tests, CI | Done |
 | 3 | Notebook research extensions — recency features, time-series baselines, weather/holiday | Done |
-| 4 | Move the service to current monthly TLC data — ingestion and rolling-window training so far | In progress |
+| 4 | Move the service to current monthly TLC data | Ingestion and rolling-window training merged; served model is still the 2016 one, not yet retrained on TLC data |
 | — | Stateful serving for recency features | Deferred — needs a state store the service doesn't have yet |
-| — | Weather at serving time, a `date`/`is_holiday` input, real-time streaming | Not planned — see Limitations |
+| — | A `date` input with day of week, the 21% baseline gap above | In draft [PR #1](https://github.com/jpcunhadias/ride-demand-forecasting/pull/1) |
+| — | Weather at serving time, an `is_holiday` input, real-time streaming | Not planned — see Limitations |
 
 ## Limitations
 
@@ -322,12 +373,12 @@ variable to silence it.
   shape (timestamped pickup/dropoff coordinates), different city, and no
   fare data (trip duration stands in for ride value throughout — see the
   note at the top of the notebook).
-- **Stateless serving leaves accuracy on the table** — the notebook's
-  Model Validation research extension shows recency features (last
-  observed count, trailing rolling mean) cut MAE by ~20% over the static
-  features the API can currently supply. Realizing that gain needs a
-  service redesign that tracks recent per-zone-hour counts — a concrete
-  next step, not a vague one, now that it's been measured.
+- **No date input leaves accuracy on the table** — the API takes only a
+  zone and an hour, so the model cannot tell a Monday from a Saturday. A
+  zone × hour × weekday average alone cuts MAE by 21% (4.558 → 3.597, see
+  [Baselines](#baselines)). The notebook's recency extension (~20%) adds
+  day of week together with lags, so it does not show that lags or a
+  stateful service add much beyond day of week; that is still untested.
 - **Weather and holidays stay out of the service** — the notebook's
   weather result is negative but confounded (one blizzard, all of it in
   the training window), and using weather for real would need a live
