@@ -21,3 +21,7 @@ data/processed/*
 .ruff_cache/
 .mypy_cache/
 cache/
+
+# Local overrides for docker-compose.yml and host-side commands (see .env.example).
+.env
+!.env.example
