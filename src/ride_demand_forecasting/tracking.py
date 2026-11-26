@@ -8,6 +8,8 @@ import logging
 import os
 from pathlib import Path
 
+import pandas as pd
+
 from ride_demand_forecasting.config import LGBM_PARAMS, MLFLOW_EXPERIMENT
 
 logger = logging.getLogger(__name__)
@@ -51,4 +53,72 @@ def log_training_run(artifact: dict, model_path: str | Path) -> str | None:
         )
         mlflow.log_artifact(str(model_path))
     logger.info("Logged run %s to MLflow experiment %r", run.info.run_id, MLFLOW_EXPERIMENT)
+    return run.info.run_id
+
+
+def log_backtest(summary: pd.DataFrame, gap_months: int) -> list[str]:
+    """Log one run per compared setting (window length and zone count) from a backtest
+    summary; returns the run ids (empty if tracking is off)."""
+    if not os.environ.get("MLFLOW_TRACKING_URI"):
+        logger.info("MLFLOW_TRACKING_URI is not set - skipping experiment tracking")
+        return []
+
+    import mlflow
+
+    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+    run_ids = []
+    for row in summary.itertuples():
+        run_name = f"backtest-window-{row.window_months}-zones-{row.n_zones}"
+        with mlflow.start_run(run_name=run_name) as run:
+            mlflow.log_params(
+                {
+                    "window_months": row.window_months,
+                    "n_pickup_zones": row.n_zones,
+                    "gap_months": gap_months,
+                    "test_months": row.test_months,
+                }
+            )
+            mlflow.log_metrics(
+                {
+                    "mae": row.mae,
+                    "rmse": row.rmse,
+                    "wape": row.wape,
+                    "smallest_zone_share": row.smallest_zone_share,
+                }
+            )
+        run_ids.append(run.info.run_id)
+    logger.info("Logged %d backtest run(s) to MLflow", len(run_ids))
+    return run_ids
+
+
+def log_tuning(results: pd.DataFrame) -> str | None:
+    """Log the best trial of a hyperparameter search, next to the score of the current
+    configuration; returns the run id, or None if tracking is off."""
+    if not os.environ.get("MLFLOW_TRACKING_URI"):
+        logger.info("MLFLOW_TRACKING_URI is not set - skipping experiment tracking")
+        return None
+
+    import mlflow
+
+    best = results.iloc[0]
+    current = results[results["trial"] == "current"].iloc[0]
+    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+    with mlflow.start_run(run_name="tune") as run:
+        mlflow.log_params(
+            {
+                "best_trial": best["trial"],
+                "n_trials": len(results) - 1,
+                "folds": int(best["folds"]),
+                **{f"lgbm_{name}": value for name, value in best["params"].items()},
+            }
+        )
+        mlflow.log_metrics(
+            {
+                "wape": best["wape"],
+                "mae": best["mae"],
+                "rmse": best["rmse"],
+                "current_wape": current["wape"],
+            }
+        )
+    logger.info("Logged tuning run %s to MLflow", run.info.run_id)
     return run.info.run_id

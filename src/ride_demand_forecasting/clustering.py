@@ -26,3 +26,35 @@ def fit_pickup_zones(
 
 def assign_pickup_zones(df: pd.DataFrame, kmeans: KMeans) -> np.ndarray:
     return kmeans.predict(df[["start_lat", "start_lng"]])
+
+
+def weighted_silhouette(coords: np.ndarray, labels: np.ndarray, weights: np.ndarray) -> float:
+    """Mean silhouette of the dataset in which point `i` appears `weights[i]` times,
+    computed without building it.
+
+    That is the score a per-pickup clustering would get, which scikit-learn's
+    `silhouette_score` can't give for weighted points.
+    """
+    n = len(coords)
+    rows = np.arange(n)
+    distances = np.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=2)
+    clusters, cluster_of = np.unique(labels, return_inverse=True)
+    membership = (cluster_of[None, :] == np.arange(len(clusters))[:, None]) * weights
+    cluster_weight = membership.sum(axis=1)
+
+    # distance_to[i, c]: summed distance from point i to every (repeated) member of c.
+    distance_to = distances @ membership.T
+    own_weight = cluster_weight[cluster_of]
+    # Mean distance to the other members of its own cluster - its own copies are at
+    # distance zero, and one of them is the point itself.
+    within = distance_to[rows, cluster_of] / np.maximum(own_weight - 1, 1)
+    mean_to = distance_to / cluster_weight
+    mean_to[rows, cluster_of] = np.inf
+    nearest_other = mean_to.min(axis=1)
+
+    scale = np.maximum(within, nearest_other)
+    scores = np.where(scale > 0, (nearest_other - within) / np.where(scale > 0, scale, 1), 0.0)
+    # A cluster of a single pickup has no within-cluster distance; by convention it
+    # scores zero.
+    scores[own_weight <= 1] = 0.0
+    return float(np.average(scores, weights=weights))
