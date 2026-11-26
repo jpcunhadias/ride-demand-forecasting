@@ -9,12 +9,13 @@ zone clustering, a per-zone, per-hour demand model served by a FastAPI
 service and compared against naive baselines, a deployment strategy, and
 an A/B test design to evaluate it in production.
 
-The served model takes only a zone and an hour, with no date input, so it
-learns a fixed demand profile per zone and hour: it predicts within 0.03
-rides of the zone × hour training mean. A simple zone × hour × weekday
-average beats it by 21% ([Baselines](#baselines)); adding day of week is
-the next step (draft
-[PR #1](https://github.com/jpcunhadias/ride-demand-forecasting/pull/1)).
+The API takes a zone, an hour and an optional date, and passes the day of
+week to the model. The committed model was trained before day of week was
+added and ignores it, so it still learns a fixed demand profile per zone
+and hour: it predicts within 0.03 rides of the zone × hour training mean.
+A simple zone × hour × weekday average beats it by 21%
+([Baselines](#baselines)). The training code now uses day of week; a model
+trained with it on current TLC data is the next step ([Status](#status)).
 
 This started as a data-science take-home exercise for a ride-hailing
 company, built against ride data they provided for a specific city.
@@ -147,12 +148,13 @@ run end-to-end against the real dataset (not copy-pasted conclusions):
 ## The production service
 
 > **Served model is still the 2016 one.** Ingestion and rolling-window
-> training on current NYC TLC yellow taxi data are merged on `main`, but no
-> model has been trained on TLC data yet. Everything in this section, its
-> metrics, the baselines and the curl outputs describe the committed
-> `models/model.joblib`, trained on the first 145 days of the 2016 Kaggle
-> data. Running `ride-demand-train` replaces that file — see
-> [Running the service](#running-the-service).
+> training on current NYC TLC yellow taxi data, day of week as a feature,
+> MLflow tracking with registry promotion, and a DVC pipeline are merged
+> on `main`, but no model has been trained on TLC data yet. Everything in
+> this section, its metrics, the baselines and the curl outputs describe
+> the committed `models/model.joblib`, trained on the first 145 days of the
+> 2016 Kaggle data, without day of week. Running `ride-demand-train`
+> replaces that file — see [Running the service](#running-the-service).
 
 [`src/ride_demand_forecasting/`](src/ride_demand_forecasting/) ports the
 notebook's data/feature/model logic into a real package backing a FastAPI
@@ -171,13 +173,17 @@ exploratory record):
   builds a `(pickup_zone, hour) -> historical avg duration/distance` lookup
   from training data, and the service uses that internally — the API only
   needs `pickup_zone` (or raw `lat`/`lng`, mapped to a zone via the
-  persisted KMeans model) and `hour`.
+  persisted KMeans model), `hour` and, optionally, `date`.
 - **`k=20` zones and LightGBM hyperparameters from the notebook**: `k=20`
   is where the silhouette score peaked on the 2016 Kaggle data (it has not
   been re-checked on TLC data), and the hyperparameters come from the
-  notebook's "Model Validation" search. Because the API supplies only zone
-  and hour, the tuned model can only learn a fixed value per zone and hour,
-  so in practice it reproduces the zone × hour training mean.
+  notebook's "Model Validation" search. The committed model was trained on
+  zone and hour only, so it can only learn a fixed value per zone and hour,
+  and in practice it reproduces the zone × hour training mean. Training now
+  adds day of week (`FEATURE_ORDER` in `config.py`); the service always
+  passes it, and a model trained without it ignores it.
+  `ride-demand-validate-k` and `ride-demand-tune` re-check `k` and the
+  hyperparameters on TLC data; neither has been run on real data yet.
 - **Day-level training rows**: rather than one pre-averaged number per
   zone-hour for the whole split (a few hundred rows total), training uses
   one row per `(pickup_zone, hour, date)` — tens of thousands of rows,
@@ -236,11 +242,19 @@ day of week to the model.
 
 **API:**
 
-- `GET /health`
+- `GET /health` — also says which model is served: `model_source` is
+  `registry` (the version promoted in MLflow, with its `model_version`) or
+  `file` (`models/model.joblib`)
 - `POST /predict` — body is either `{"pickup_zone": int, "hour": int}` or
-  `{"lat": float, "lng": float, "hour": int}`
+  `{"lat": float, "lng": float, "hour": int}`, with an optional
+  `"date": "YYYY-MM-DD"` (default: today in New York, since TLC times are
+  New York local time). The response repeats the date it predicted for.
 - `GET /rankings?hour=18&top_n=10` — zones ranked by predicted demand for
-  that hour, for the driver-guidance use case described below
+  that hour (optionally `&date=YYYY-MM-DD`), for the driver-guidance use
+  case described below
+
+With the committed model the date changes nothing: zone 5 at 18:00 is
+19.63 rides on a Monday and on a Saturday.
 
 ## Stack
 
@@ -248,6 +262,12 @@ day of week to the model.
 
 - **Service** (default install): pandas, NumPy, scikit-learn, LightGBM,
   FastAPI, Uvicorn, Pydantic, joblib.
+- **MLOps** (also in the default install, used only when configured):
+  `mlflow-skinny` for experiment tracking and the model registry, active
+  when `MLFLOW_TRACKING_URI` is set; DVC with S3 support for the pipeline
+  and data versioning.
+- **Local stack** (`docker-compose.yml`): SeaweedFS as S3-compatible
+  object storage, Postgres 16, an MLflow tracking server and the API.
 - **Notebook only** (`uv sync --extra notebook`): XGBoost (the untuned
   baseline and the tuning comparison point), GeoPandas, `osmnx` +
   `contextily` (OSM boundaries and basemaps), `geopy` (geodesic distance),
@@ -317,6 +337,50 @@ its data and the test month, and skips evaluation when there isn't enough
 history for that. It replaces the committed model, which until then is the
 one trained on the 2016 data.
 
+Checks that justify the pipeline's settings, each scored on recent TLC
+months:
+
+```bash
+uv run ride-demand-backtest    # training-window lengths and zone counts
+uv run ride-demand-validate-k  # number of pickup zones on the latest window
+uv run ride-demand-tune        # random search over LightGBM hyperparameters
+```
+
+### Tracking, promotion and the local stack
+
+None of this is needed to serve or retrain; without `MLFLOW_TRACKING_URI`
+training logs nothing and the API serves the model file.
+
+```bash
+docker compose up -d                  # SeaweedFS, Postgres, MLflow (port 5001), API
+cp .env.example .env
+uv run --env-file .env dvc repro      # ingest -> train -> promote, whatever is out of date
+uv run --env-file .env ride-demand-promote --list         # registered versions
+uv run --env-file .env ride-demand-promote --version 3    # roll back or override
+```
+
+With `MLFLOW_TRACKING_URI` set, `ride-demand-train` logs each run to MLflow.
+`ride-demand-promote` registers the new model and moves the registry's
+`champion` alias to it unless its error (WAPE) is more than
+`RDF_PROMOTION_TOLERANCE` (5%) higher than the current model's. Both are
+scored on the newest month, each trained on data up to the same month, so
+the rule compares the pipeline rather than how recent the data is. The
+decision is written to `models/promotion.json`.
+
+At startup the API loads the `champion` version from the registry. If
+MLflow is not configured, unreachable, slower than
+`RDF_REGISTRY_LOAD_TIMEOUT_S` or has nothing promoted, it serves
+`models/model.joblib` instead; `/health` says which. It reads the registry
+at startup only, so restart it after a promotion
+(`docker compose restart api`).
+
+`dvc.yaml` runs ingest, train and promote as stages, and `dvc push` /
+`dvc pull` sync `data/raw/tlc` with the remote in `.dvc/config`
+(`s3://ride-demand-forecasting/dvc`; set the endpoint per machine in
+`.dvc/config.local`). Every port in the compose stack is bound to
+127.0.0.1 by default and its credentials are local-only placeholders:
+change both in `.env` before reaching it from another machine.
+
 Configuration is via environment variables:
 
 | Variable | Default | Purpose |
@@ -324,6 +388,11 @@ Configuration is via environment variables:
 | `RDF_MODEL_PATH` | `models/model.joblib` | Artifact the API loads and the training CLI writes |
 | `RDF_TLC_DATA_DIR` | `data/raw/tlc` | Where monthly trip files are downloaded to and read from |
 | `RDF_MODEL_STALENESS_WARNING_DAYS` | `30` | Artifact age above which the API logs a warning at startup |
+| `MLFLOW_TRACKING_URI` | unset | MLflow server for tracking, promotion and the API's registry lookup; unset turns all three off |
+| `RDF_PROMOTION_TOLERANCE` | `0.05` | How much higher (relative WAPE) a new model's error may be and still be promoted |
+| `RDF_REGISTRY_LOAD_TIMEOUT_S` | `30` | How long the API waits for the registry at startup before serving the file |
+| `RDF_MLFLOW_EXPERIMENT`, `RDF_MLFLOW_MODEL_NAME` | `ride-demand-forecasting` | MLflow experiment and registered model names |
+| `RDF_METRICS_PATH`, `RDF_PROMOTION_PATH` | `models/metrics.json`, `models/promotion.json` | Latest evaluation metrics and promotion decision, for DVC |
 
 The staleness check is passive — it logs, and never blocks startup or
 requests. The committed artifact was trained on 2026-09-06 against a
@@ -348,9 +417,16 @@ variable to silence it.
 │   ├── ingest.py                             # downloads monthly TLC trip files
 │   ├── zones.py                              # TLC zone IDs to centre points
 │   ├── train.py                              # training entry point
+│   ├── validation.py                         # backtest, validate-k and tune commands
+│   ├── tracking.py, registry.py              # MLflow runs and the model registry
+│   ├── promote.py                            # the promotion rule and command
 │   ├── inference.py                          # loads the artifact, serves predictions
 │   └── api/                                  # FastAPI app
 ├── tests/
+├── docker/mlflow/    # image for the compose stack's MLflow server
+├── docker-compose.yml
+├── dvc.yaml          # ingest -> train -> promote
+├── .env.example
 ├── Dockerfile
 └── .github/workflows/ci.yml
 ```
@@ -362,9 +438,10 @@ variable to silence it.
 | 1 | EDA, zone clustering, baseline XGBoost demand model, deployment strategy, A/B test design | Done |
 | 2 | Productionized service — FastAPI, Docker, tests, CI | Done |
 | 3 | Notebook research extensions — recency features, time-series baselines, weather/holiday | Done |
-| 4 | Move the service to current monthly TLC data | Ingestion and rolling-window training merged; served model is still the 2016 one, not yet retrained on TLC data |
+| 4 | Move the service to current monthly TLC data | Ingestion, rolling-window training, MLflow tracking, registry promotion and a DVC pipeline merged; served model is still the 2016 one, not yet retrained on TLC data |
+| — | A `date` input with day of week, the 21% baseline gap above | API and training merged; no effect until a model trained with day of week is promoted |
+| — | Train on TLC data, re-check `k` and hyperparameters, promote | Next |
 | — | Stateful serving for recency features | Deferred — needs a state store the service doesn't have yet |
-| — | A `date` input with day of week, the 21% baseline gap above | In draft [PR #1](https://github.com/jpcunhadias/ride-demand-forecasting/pull/1) |
 | — | Weather at serving time, an `is_holiday` input, real-time streaming | Not planned — see Limitations |
 
 ## Limitations
@@ -373,21 +450,23 @@ variable to silence it.
   shape (timestamped pickup/dropoff coordinates), different city, and no
   fare data (trip duration stands in for ride value throughout — see the
   note at the top of the notebook).
-- **No date input leaves accuracy on the table** — the API takes only a
-  zone and an hour, so the model cannot tell a Monday from a Saturday. A
-  zone × hour × weekday average alone cuts MAE by 21% (4.558 → 3.597, see
-  [Baselines](#baselines)). The notebook's recency extension (~20%) adds
-  day of week together with lags, so it does not show that lags or a
+- **The served model ignores the date** — the API takes a date and passes
+  day of week, but the committed model was trained without it, so it
+  cannot tell a Monday from a Saturday. A zone × hour × weekday average
+  alone cuts MAE by 21% (4.558 → 3.597, see [Baselines](#baselines));
+  whether a model trained with day of week matches or beats that is
+  untested until one is trained. The notebook's recency extension (~20%)
+  adds day of week together with lags, so it does not show that lags or a
   stateful service add much beyond day of week; that is still untested.
 - **Weather and holidays stay out of the service** — the notebook's
   weather result is negative but confounded (one blizzard, all of it in
   the training window), and using weather for real would need a live
-  forecast dependency. The holiday flag's small gain would need a `date`
-  input the API doesn't take, and one holiday in the test window is thin
-  evidence for changing the contract.
+  forecast dependency. The API now takes the `date` a holiday flag would
+  need, but its small gain rests on one holiday in the test window, which
+  is thin evidence for adding it.
 - **Batch retraining only** — no scheduled retraining/CD pipeline yet (the
   notebook's deployment strategy section sketches an Airflow-based one);
-  `uv run ride-demand-train` is a manual step for now.
+  `dvc repro` (ingest → train → promote) is a manual step for now.
 - **~6 months of data, one city** — the Kaggle dataset spans January-June
   2016 only, so seasonal patterns outside that window (e.g. summer, winter
   holidays) are untested; the ~5-week test window is standard for a
