@@ -1,4 +1,4 @@
-# The pipeline as two reproducible stages. `dvc repro` runs whatever is out of date;
+# The pipeline as three reproducible stages. `dvc repro` runs whatever is out of date;
 # `dvc push` / `dvc pull` sync the ingested data with the remote in .dvc/config.
 stages:
   ingest:
@@ -28,4 +28,17 @@ stages:
           cache: false
     metrics:
       - models/metrics.json:
+          cache: false
+
+  promote:
+    cmd: ride-demand-promote
+    deps:
+      - data/raw/tlc
+      - models/model.joblib
+      - src/ride_demand_forecasting/promote.py
+      - src/ride_demand_forecasting/registry.py
+    outs:
+      # The decision and both scores. Without an MLflow server it records that nothing
+      # was promoted, and the API keeps serving models/model.joblib.
+      - models/promotion.json:
           cache: false
